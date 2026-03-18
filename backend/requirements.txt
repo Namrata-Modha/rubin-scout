@@ -1,0 +1,44 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.1
+geoalchemy2==0.15.2
+
+# Astronomy
+alerce==1.4.0
+astropy>=6.1.0
+astroquery>=0.4.7
+
+# Data processing
+pandas==2.2.3
+numpy>=1.26.0
+
+# HTTP
+httpx==0.28.1
+aiohttp==3.11.11
+
+# Scheduling
+apscheduler==3.10.4
+
+# Notifications
+slack-sdk==3.33.5
+
+# Streaming (install when ready for Kafka)
+# confluent-kafka==2.6.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-httpx==0.35.0
+anyio>=4.0.0
+
+# Dev
+ruff==0.9.3

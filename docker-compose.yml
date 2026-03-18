@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  db:
+    image: timescale/timescaledb-ha:pg16
+    container_name: rubinscout-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rubinscout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rubinscout}
+      POSTGRES_DB: ${POSTGRES_DB:-rubinscout}
+    ports:
+      - "5432:5432"
+    volumes:
+      - rubinscout_pgdata:/home/postgres/pgdata/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rubinscout"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rubinscout-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  ingestion:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rubinscout-ingestion
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m app.ingestion.scheduler
+
+volumes:
+  rubinscout_pgdata:
