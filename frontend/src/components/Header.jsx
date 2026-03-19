@@ -19,6 +19,9 @@ export default function Header() {
           <Link to="/" className="hover:text-white transition-colors">
             Dashboard
           </Link>
+          <Link to="/gravitational-waves" className="hover:text-white transition-colors">
+            GW Events
+          </Link>
           <a
             href="http://localhost:8000/docs"
             target="_blank"
@@ -28,7 +31,7 @@ export default function Header() {
             API Docs
           </a>
           <a
-            href="https://github.com/namrata-modha/rubin-scout"
+            href="https://github.com/Namrata-Modha/rubin-scout"
             target="_blank"
             rel="noopener"
             className="hover:text-white transition-colors"

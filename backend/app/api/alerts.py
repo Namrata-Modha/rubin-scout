@@ -34,22 +34,31 @@ async def get_recent_alerts(
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    query = (
+    base_query = (
         select(Object)
         .where(Object.last_detection >= cutoff)
         .where(Object.classification_probability >= min_probability)
-        .order_by(desc(Object.last_detection))
     )
 
     if classification:
-        query = query.where(Object.classification == classification)
+        base_query = base_query.where(Object.classification == classification)
 
-    query = query.limit(limit).offset(offset)
+    # Total count for pagination
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
+    total = count_result.scalar() or 0
+
+    # Paginated results
+    query = base_query.order_by(desc(Object.last_detection)).limit(limit).offset(offset)
     result = await db.execute(query)
     objects = result.scalars().all()
 
     return {
         "count": len(objects),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
         "alerts": [obj.to_dict() for obj in objects],
     }
 

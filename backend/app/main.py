@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.api.alerts import router as alerts_router
 from app.api.subscriptions import router as subscriptions_router
+from app.api.gw import router as gw_router
 
 settings = get_settings()
 
@@ -61,6 +62,7 @@ app.add_middleware(
 # Include API routes
 app.include_router(alerts_router)
 app.include_router(subscriptions_router)
+app.include_router(gw_router)
 
 
 @app.get("/", tags=["health"])

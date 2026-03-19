@@ -31,7 +31,7 @@ The Rubin Observatory produces up to 7 million alerts per night. Community broke
 
 ```bash
 # Clone the repo
-git clone https://github.com/namratam-dev/rubin-scout.git
+git clone https://github.com/Namrata-Modha/rubin-scout.git
 cd rubin-scout
 
 # Copy environment template

@@ -1,9 +1,15 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, ExternalLink, MapPin, Clock, Hash } from "lucide-react";
+import { ArrowLeft, ExternalLink, Sparkles } from "lucide-react";
 import LightCurveChart from "../components/LightCurveChart";
 import ClassBadge from "../components/ClassBadge";
 import { getAlertDetail } from "../lib/api";
+import {
+  getClassInfo,
+  getConstellation,
+  formatTimeSince,
+  formatFirstSeen,
+} from "../lib/cosmos";
 
 export default function AlertDetail() {
   const { oid } = useParams();
@@ -30,7 +36,7 @@ export default function AlertDetail() {
     return (
       <div className="space-y-4 animate-pulse">
         <div className="h-8 bg-white/5 rounded w-48" />
-        <div className="h-64 bg-white/5 rounded" />
+        <div className="h-64 bg-white/5 rounded-xl" />
       </div>
     );
   }
@@ -38,22 +44,25 @@ export default function AlertDetail() {
   if (error || !data) {
     return (
       <div className="space-y-4">
-        <Link to="/" className="flex items-center gap-1.5 text-sm text-white/40 hover:text-white/60">
+        <Link
+          to="/"
+          className="flex items-center gap-1.5 text-sm text-white/40 hover:text-white/60"
+        >
           <ArrowLeft className="w-4 h-4" /> Back to dashboard
         </Link>
-        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-6 text-center">
-          <p className="text-red-300">
-            {error || `Object ${oid} not found`}
-          </p>
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-6 text-center">
+          <p className="text-red-300">{error || `Object ${oid} not found`}</p>
         </div>
       </div>
     );
   }
 
   const obj = data.object;
+  const info = getClassInfo(obj.classification);
+  const constellation = getConstellation(obj.ra, obj.dec);
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
       {/* Back link */}
       <Link
         to="/"
@@ -62,100 +71,146 @@ export default function AlertDetail() {
         <ArrowLeft className="w-4 h-4" /> Back to dashboard
       </Link>
 
-      {/* Object header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-mono font-semibold">{obj.oid}</h1>
-          <div className="flex items-center gap-3 mt-2">
-            <ClassBadge
-              classification={obj.classification}
-              probability={obj.classification_probability}
-            />
-            {obj.cross_match_name && (
-              <span className="text-xs text-white/40">
-                Cross-match: {obj.cross_match_name}
-                {obj.cross_match_type && ` (${obj.cross_match_type})`}
-              </span>
-            )}
+      {/* Hero section */}
+      <div
+        className="rounded-2xl p-6 border"
+        style={{
+          background: `linear-gradient(135deg, ${info.color}08, ${info.color}03, transparent)`,
+          borderColor: info.color + "15",
+        }}
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <span className="text-3xl mb-2 block">{info.emoji}</span>
+            <h1 className="text-2xl font-semibold text-white/90 mt-2">
+              {info.name}
+            </h1>
+            <p className="text-white/50 mt-1">{info.short}</p>
+            <p className="text-xs font-mono text-white/20 mt-2">{obj.oid}</p>
           </div>
+          {obj.alert_url && (
+            <a
+              href={obj.alert_url}
+              target="_blank"
+              rel="noopener"
+              className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/50 transition-colors"
+            >
+              Raw data <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
         </div>
-        {obj.alert_url && (
-          <a
-            href={obj.alert_url}
-            target="_blank"
-            rel="noopener"
-            className="flex items-center gap-1.5 text-xs text-cosmos-400 hover:text-cosmos-300 transition-colors"
-          >
-            View on ALeRCE <ExternalLink className="w-3 h-3" />
-          </a>
-        )}
+
+        {/* Story paragraph */}
+        <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/[0.04]">
+          <p className="text-sm text-white/50 leading-relaxed">
+            {info.description}
+          </p>
+          {info.danger && (
+            <p className="text-xs text-white/30 mt-2 italic">
+              {info.danger}
+            </p>
+          )}
+        </div>
       </div>
 
-      {/* Metadata grid */}
+      {/* Quick facts */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <MetaCard
-          icon={MapPin}
-          label="Position"
-          value={`${obj.ra?.toFixed(5)}, ${obj.dec?.toFixed(5)}`}
-          sub="RA, Dec (degrees)"
+        <FactCard
+          label="Location"
+          value={constellation}
+          detail={`RA ${obj.ra?.toFixed(2)}° Dec ${obj.dec?.toFixed(2)}°`}
         />
-        <MetaCard
-          icon={Hash}
-          label="Detections"
-          value={obj.n_detections?.toString() || "0"}
-          sub="Total measurements"
+        <FactCard
+          label="Observations"
+          value={`${obj.n_detections} times`}
+          detail={`Since ${formatFirstSeen(obj.first_detection)}`}
         />
-        <MetaCard
-          icon={Clock}
-          label="First Seen"
-          value={
-            obj.first_detection
-              ? new Date(obj.first_detection).toLocaleDateString()
-              : "N/A"
-          }
-          sub={obj.first_detection ? new Date(obj.first_detection).toLocaleTimeString() : ""}
-        />
-        <MetaCard
-          icon={Clock}
-          label="Last Seen"
-          value={
+        <FactCard
+          label="Last spotted"
+          value={formatTimeSince(obj.last_detection)}
+          detail={
             obj.last_detection
               ? new Date(obj.last_detection).toLocaleDateString()
+              : ""
+          }
+        />
+        <FactCard
+          label="Confidence"
+          value={
+            obj.classification_probability
+              ? `${(obj.classification_probability * 100).toFixed(0)}%`
               : "N/A"
           }
-          sub={obj.last_detection ? new Date(obj.last_detection).toLocaleTimeString() : ""}
+          detail={
+            obj.classification_probability > 0.8
+              ? "High confidence"
+              : obj.classification_probability > 0.6
+                ? "Moderate confidence"
+                : "Low confidence"
+          }
         />
       </div>
 
+      {/* Cross-match info */}
+      {obj.cross_match_name && (
+        <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Sparkles className="w-4 h-4 text-yellow-400/60" />
+            <span className="text-sm text-white/60">Known association</span>
+          </div>
+          <p className="text-sm text-white/40">
+            This object is near <span className="text-white/70">{obj.cross_match_name}</span>
+            {obj.cross_match_type && (
+              <span> (classified as {obj.cross_match_type} in SIMBAD)</span>
+            )}
+          </p>
+        </div>
+      )}
+
       {/* Light curve */}
-      <LightCurveChart
-        lightCurve={data.light_curve}
-        title={`Light Curve: ${obj.oid}`}
-      />
+      <div>
+        <h2 className="text-sm font-medium text-white/50 mb-3 flex items-center gap-2">
+          Brightness Over Time
+          <span className="text-[10px] text-white/20 font-normal">
+            Each dot is one observation. Lower = brighter (astronomers are weird).
+          </span>
+        </h2>
+        <LightCurveChart lightCurve={data.light_curve} />
+      </div>
 
       {/* Classification probabilities */}
       {data.probabilities && data.probabilities.length > 0 && (
-        <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-4">
-          <h3 className="text-sm font-medium text-white/60 mb-3">
-            Classification Probabilities
-          </h3>
-          <div className="space-y-2">
-            {data.probabilities.slice(0, 8).map((prob) => (
-              <div key={prob.class_name} className="flex items-center gap-3">
-                <span className="text-xs font-mono text-white/50 w-20 shrink-0">
-                  {prob.class_name}
-                </span>
-                <div className="flex-1 bg-white/[0.04] rounded-full h-2 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-cosmos-500 transition-all"
-                    style={{ width: `${(prob.probability * 100).toFixed(1)}%` }}
-                  />
+        <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+          <h2 className="text-sm font-medium text-white/50 mb-1">
+            What the AI thinks this is
+          </h2>
+          <p className="text-[11px] text-white/25 mb-4">
+            ALeRCE's machine learning classifier ranked these possibilities:
+          </p>
+          <div className="space-y-2.5">
+            {data.probabilities.slice(0, 6).map((prob) => {
+              const pi = getClassInfo(prob.class_name);
+              return (
+                <div key={prob.class_name} className="flex items-center gap-3">
+                  <span className="text-sm w-5 text-center">{pi.emoji}</span>
+                  <span className="text-xs text-white/50 w-36 shrink-0">
+                    {pi.name}
+                  </span>
+                  <div className="flex-1 bg-white/[0.04] rounded-full h-2 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${(prob.probability * 100).toFixed(1)}%`,
+                        background: pi.color + "90",
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs font-mono text-white/30 w-12 text-right">
+                    {(prob.probability * 100).toFixed(1)}%
+                  </span>
                 </div>
-                <span className="text-xs font-mono text-white/40 w-12 text-right">
-                  {(prob.probability * 100).toFixed(1)}%
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -163,17 +218,14 @@ export default function AlertDetail() {
   );
 }
 
-function MetaCard({ icon: Icon, label, value, sub }) {
+function FactCard({ label, value, detail }) {
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-3">
-      <div className="flex items-center gap-2 mb-1">
-        <Icon className="w-3.5 h-3.5 text-white/30" />
-        <span className="text-[10px] text-white/30 uppercase tracking-wider">
-          {label}
-        </span>
-      </div>
-      <p className="font-mono text-sm">{value}</p>
-      {sub && <p className="text-[10px] text-white/20 mt-0.5">{sub}</p>}
+    <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-3.5">
+      <p className="text-[10px] text-white/25 uppercase tracking-wider mb-1">
+        {label}
+      </p>
+      <p className="text-sm font-medium text-white/80">{value}</p>
+      {detail && <p className="text-[10px] text-white/25 mt-0.5">{detail}</p>}
     </div>
   );
 }

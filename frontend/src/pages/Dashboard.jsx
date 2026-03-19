@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { Search, Filter, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Filter, RefreshCw } from "lucide-react";
 import StatsBar from "../components/StatsBar";
 import SkyMap from "../components/SkyMap";
 import AlertTable from "../components/AlertTable";
@@ -15,8 +14,11 @@ const LOOKBACK_OPTIONS = [
   { label: "All", value: 87600 },
 ];
 
+const PER_PAGE = 12;
+
 export default function Dashboard() {
   const [alerts, setAlerts] = useState([]);
+  const [total, setTotal] = useState(0);
   const [stats, setStats] = useState(null);
   const [classifications, setClassifications] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,24 +26,32 @@ export default function Dashboard() {
 
   // Filters
   const [selectedClass, setSelectedClass] = useState("");
-  const [hours, setHours] = useState(24);
+  const [hours, setHours] = useState(87600);
   const [minProb, setMinProb] = useState(0.5);
+
+  // Pagination
+  const [page, setPage] = useState(1);
+
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      const offset = (page - 1) * PER_PAGE;
       const [alertsRes, statsRes, classRes] = await Promise.all([
         getRecentAlerts({
           classification: selectedClass || null,
           minProbability: minProb,
           hours,
-          limit: 100,
+          limit: PER_PAGE,
+          offset,
         }),
         getSummaryStats(hours),
         getClassifications(),
       ]);
       setAlerts(alertsRes.alerts || []);
+      setTotal(alertsRes.total || alertsRes.count || 0);
       setStats(statsRes);
       setClassifications(classRes.classifications || []);
     } catch (err) {
@@ -50,11 +60,16 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [selectedClass, hours, minProb]);
+  }, [selectedClass, hours, minProb, page]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [selectedClass, hours, minProb]);
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
@@ -68,10 +83,10 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Transient Alerts
+            What's happening in the universe
           </h1>
           <p className="text-sm text-white/40 mt-1">
-            Real-time filtered alerts from ZTF and Rubin/LSST via ALeRCE
+            Exploding stars, feeding black holes, and cosmic collisions detected by telescopes around the world
           </p>
         </div>
         <button
@@ -156,7 +171,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Sky Map + Alert Table layout */}
+      {/* Sky Map */}
       <SkyMap
         alerts={alerts}
         onSelectAlert={(alert) => {
@@ -164,12 +179,73 @@ export default function Dashboard() {
         }}
       />
 
-      {/* Alert table */}
+      {/* Alert cards */}
       <AlertTable alerts={alerts} loading={loading} />
 
-      {/* Footer info */}
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2 pt-2 pb-4">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-white/50 hover:text-white/80 hover:bg-white/[0.08] transition-all disabled:opacity-20 disabled:pointer-events-none"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+            Previous
+          </button>
+
+          <div className="flex items-center gap-1">
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter((p) => {
+                // Show first, last, and pages near current
+                if (p === 1 || p === totalPages) return true;
+                if (Math.abs(p - page) <= 1) return true;
+                return false;
+              })
+              .reduce((acc, p, i, arr) => {
+                // Insert dots between non-consecutive pages
+                if (i > 0 && p - arr[i - 1] > 1) {
+                  acc.push(
+                    <span key={`dot-${p}`} className="text-white/15 text-xs px-1">
+                      ...
+                    </span>
+                  );
+                }
+                acc.push(
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`w-8 h-8 rounded-lg text-xs font-mono transition-all ${
+                      p === page
+                        ? "bg-cosmos-600 text-white"
+                        : "text-white/40 hover:text-white/70 hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                );
+                return acc;
+              }, [])}
+          </div>
+
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-white/50 hover:text-white/80 hover:bg-white/[0.08] transition-all disabled:opacity-20 disabled:pointer-events-none"
+          >
+            Next
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+
+          <span className="text-[10px] text-white/20 ml-3">
+            {total} events total
+          </span>
+        </div>
+      )}
+
+      {/* Footer */}
       <p className="text-[10px] text-white/20 text-center py-4">
-        Data sourced from ALeRCE (alerce.science) and Pitt-Google brokers.
+        Data from ALeRCE (alerce.science) and the Zwicky Transient Facility.
         Rubin Scout is not affiliated with the Vera C. Rubin Observatory.
       </p>
     </div>

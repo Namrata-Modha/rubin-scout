@@ -1,111 +1,122 @@
 import { Link } from "react-router-dom";
-import { ExternalLink } from "lucide-react";
-import ClassBadge from "./ClassBadge";
+import { ExternalLink, Eye } from "lucide-react";
+import { getClassInfo, getConstellation, formatTimeSince, getAlertSummary } from "../lib/cosmos";
 
 export default function AlertTable({ alerts, loading }) {
   if (loading) {
     return (
-      <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg overflow-hidden">
-        <div className="p-8 text-center text-white/30 animate-pulse">
-          Loading alerts...
-        </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {[...Array(6)].map((_, i) => (
+          <div key={i} className="bg-white/[0.03] rounded-xl p-5 animate-pulse h-32" />
+        ))}
       </div>
     );
   }
 
   if (!alerts || alerts.length === 0) {
     return (
-      <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-8 text-center text-white/30">
-        No alerts found for the current filters.
+      <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-12 text-center">
+        <p className="text-2xl mb-2">🔭</p>
+        <p className="text-white/40">No transients found with these filters.</p>
+        <p className="text-white/20 text-sm mt-1">Try widening the time range or lowering the confidence threshold.</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white/[0.03] border border-white/[0.06] rounded-lg overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-white/[0.06] text-white/40 text-xs uppercase tracking-wider">
-              <th className="text-left px-4 py-3 font-medium">Object ID</th>
-              <th className="text-left px-4 py-3 font-medium">Class</th>
-              <th className="text-right px-4 py-3 font-medium">RA</th>
-              <th className="text-right px-4 py-3 font-medium">Dec</th>
-              <th className="text-right px-4 py-3 font-medium">Detections</th>
-              <th className="text-left px-4 py-3 font-medium">Cross-match</th>
-              <th className="text-left px-4 py-3 font-medium">Last Seen</th>
-              <th className="text-center px-4 py-3 font-medium">Links</th>
-            </tr>
-          </thead>
-          <tbody>
-            {alerts.map((alert) => (
-              <tr
-                key={alert.oid}
-                className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors"
-              >
-                <td className="px-4 py-3">
-                  <Link
-                    to={`/alert/${alert.oid}`}
-                    className="font-mono text-cosmos-400 hover:text-cosmos-300 transition-colors"
-                  >
-                    {alert.oid}
-                  </Link>
-                </td>
-                <td className="px-4 py-3">
-                  <ClassBadge
-                    classification={alert.classification}
-                    probability={alert.classification_probability}
-                  />
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-white/60">
-                  {alert.ra?.toFixed(4)}
-                </td>
-                <td className="px-4 py-3 text-right font-mono text-white/60">
-                  {alert.dec?.toFixed(4)}
-                </td>
-                <td className="px-4 py-3 text-right font-mono">
-                  {alert.n_detections}
-                </td>
-                <td className="px-4 py-3 text-white/50 text-xs truncate max-w-[160px]">
-                  {alert.cross_match_name || "\u2014"}
-                </td>
-                <td className="px-4 py-3 text-white/40 text-xs">
-                  {alert.last_detection
-                    ? formatRelativeTime(alert.last_detection)
-                    : "\u2014"}
-                </td>
-                <td className="px-4 py-3 text-center">
-                  {alert.alert_url && (
-                    <a
-                      href={alert.alert_url}
-                      target="_blank"
-                      rel="noopener"
-                      className="text-white/30 hover:text-white/60 transition-colors"
-                      title="View on ALeRCE"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5 inline" />
-                    </a>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="grid gap-3 md:grid-cols-2">
+      {alerts.map((alert) => (
+        <AlertCard key={alert.oid} alert={alert} />
+      ))}
     </div>
   );
 }
 
-function formatRelativeTime(isoString) {
-  const date = new Date(isoString);
-  const now = new Date();
-  const diffMs = now - date;
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
+function AlertCard({ alert }) {
+  const info = getClassInfo(alert.classification);
+  const constellation = getConstellation(alert.ra, alert.dec);
+  const summary = getAlertSummary(alert);
 
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+  return (
+    <Link
+      to={`/alert/${alert.oid}`}
+      className="group block bg-white/[0.025] hover:bg-white/[0.045] border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 transition-all duration-200"
+    >
+      {/* Header: emoji + name + time */}
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex items-center gap-2.5">
+          <span
+            className="text-lg w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: info.color + "15" }}
+          >
+            {info.emoji}
+          </span>
+          <div>
+            <p className="text-sm font-medium text-white/85 group-hover:text-white transition-colors">
+              {info.name}
+            </p>
+            <p className="text-[11px] text-white/35">{info.short}</p>
+          </div>
+        </div>
+        <span className="text-[10px] text-white/25 shrink-0">
+          {formatTimeSince(alert.last_detection)}
+        </span>
+      </div>
+
+      {/* Summary line */}
+      <p className="text-xs text-white/45 leading-relaxed mb-3">
+        {summary}
+      </p>
+
+      {/* Footer: location + links */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 text-[10px] text-white/25">
+          <span>📍 {constellation}</span>
+          <span>·</span>
+          <span>{alert.n_detections} observations</span>
+          {alert.cross_match_name && (
+            <>
+              <span>·</span>
+              <span>Near {alert.cross_match_name}</span>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-white/15 group-hover:text-white/30 transition-colors">
+            {alert.oid}
+          </span>
+          {alert.alert_url && (
+            <a
+              href={alert.alert_url}
+              target="_blank"
+              rel="noopener"
+              onClick={(e) => e.stopPropagation()}
+              className="text-white/15 hover:text-white/40 transition-colors"
+              title="View raw data on ALeRCE"
+            >
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
+        </div>
+      </div>
+
+      {/* Confidence bar */}
+      {alert.classification_probability != null && (
+        <div className="mt-2.5 flex items-center gap-2">
+          <div className="flex-1 bg-white/[0.04] rounded-full h-1 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${alert.classification_probability * 100}%`,
+                background: info.color + "80",
+              }}
+            />
+          </div>
+          <span className="text-[9px] font-mono text-white/20">
+            {(alert.classification_probability * 100).toFixed(0)}% confidence
+          </span>
+        </div>
+      )}
+    </Link>
+  );
 }

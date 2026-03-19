@@ -1,33 +1,38 @@
-import clsx from "clsx";
+import { getClassInfo } from "../lib/cosmos";
 
-const CLASS_COLORS = {
-  SNIa: "bg-red-400/20 text-red-300 border-red-400/30",
-  SNII: "bg-orange-400/20 text-orange-300 border-orange-400/30",
-  SNIbc: "bg-rose-400/20 text-rose-300 border-rose-400/30",
-  SLSN: "bg-purple-400/20 text-purple-300 border-purple-400/30",
-  TDE: "bg-cyan-400/20 text-cyan-300 border-cyan-400/30",
-  AGN: "bg-blue-400/20 text-blue-300 border-blue-400/30",
-  Blazar: "bg-indigo-400/20 text-indigo-300 border-indigo-400/30",
-  QSO: "bg-sky-400/20 text-sky-300 border-sky-400/30",
-  KN: "bg-yellow-400/20 text-yellow-300 border-yellow-400/30",
-  "CV/Nova": "bg-green-400/20 text-green-300 border-green-400/30",
-};
+export default function ClassBadge({ classification, probability, size = "sm" }) {
+  const info = getClassInfo(classification);
 
-export default function ClassBadge({ classification, probability }) {
-  const colorClass =
-    CLASS_COLORS[classification] ||
-    "bg-gray-400/20 text-gray-300 border-gray-400/30";
+  if (size === "lg") {
+    return (
+      <div className="flex items-center gap-2.5">
+        <span className="text-xl">{info.emoji}</span>
+        <div>
+          <p className="text-sm font-medium text-white/90">{info.name}</p>
+          <p className="text-xs text-white/40">{info.short}</p>
+        </div>
+        {probability != null && (
+          <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.06] text-white/40">
+            {(probability * 100).toFixed(0)}% match
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <span
-      className={clsx(
-        "inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono border",
-        colorClass
-      )}
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs border"
+      style={{
+        background: info.color + "18",
+        borderColor: info.color + "30",
+        color: info.color,
+      }}
     >
-      {classification || "unknown"}
+      <span>{info.emoji}</span>
+      <span>{info.name}</span>
       {probability != null && (
-        <span className="opacity-60">{(probability * 100).toFixed(0)}%</span>
+        <span className="opacity-50 ml-0.5">{(probability * 100).toFixed(0)}%</span>
       )}
     </span>
   );

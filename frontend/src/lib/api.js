@@ -18,17 +18,19 @@ async function fetchJSON(url, options = {}) {
   return response.json();
 }
 
-/** Get recent alerts with optional filters. */
+/** Get recent alerts with optional filters and pagination. */
 export async function getRecentAlerts({
   classification = null,
   minProbability = 0.5,
-  hours = 24,
-  limit = 50,
+  hours = 87600,
+  limit = 12,
+  offset = 0,
 } = {}) {
   const params = new URLSearchParams({
     min_probability: minProbability,
     hours,
     limit,
+    offset,
   });
   if (classification) params.set("classification", classification);
   return fetchJSON(`/alerts/recent?${params}`);
@@ -53,4 +55,24 @@ export async function getSummaryStats(hours = 24) {
 /** Get list of all classification types. */
 export async function getClassifications() {
   return fetchJSON(`/classifications`);
+}
+
+/** Get all gravitational wave events. */
+export async function getGWEvents() {
+  return fetchJSON(`/gw/events`);
+}
+
+/** Get a single GW event. */
+export async function getGWEvent(superEventId) {
+  return fetchJSON(`/gw/events/${superEventId}`);
+}
+
+/** Run cross-matching for a GW event. */
+export async function crossMatchGWEvent(superEventId, { searchRadiusDeg = 15, timeWindowDays = 30 } = {}) {
+  return fetchJSON(`/gw/events/${superEventId}/crossmatch?search_radius_deg=${searchRadiusDeg}&time_window_days=${timeWindowDays}`, { method: "POST" });
+}
+
+/** Seed GW events into the database. */
+export async function seedGWEvents() {
+  return fetchJSON(`/gw/seed`, { method: "POST" });
 }

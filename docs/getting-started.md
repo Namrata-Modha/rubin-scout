@@ -12,7 +12,7 @@ This guide gets you from zero to a running Rubin Scout instance with real astron
 ## Step 1: Clone and Configure
 
 ```bash
-git clone https://github.com/namratam-dev/rubin-scout.git
+git clone https://github.com/Namrata-Modha/rubin-scout.git
 cd rubin-scout
 cp .env.example .env
 ```
