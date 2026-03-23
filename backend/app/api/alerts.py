@@ -1,38 +1,49 @@
 """
 API routes for querying and exploring alerts.
 
-These endpoints serve the React dashboard and are also usable
-directly by scientists from Jupyter notebooks or scripts.
+Security:
+- Rate limited: 60 req/min for reads
+- Classification filter validated against allowlist
+- OID validated against ZTF naming pattern
+- All string inputs length-limited
+- Parameterized queries only (no SQL injection risk)
 """
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select, func, text, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.models import Object, Detection, ClassificationProbability
+from app.security import limiter
+from app.validation import validate_oid, validate_classification
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 
 
 @router.get("/alerts/recent")
+@limiter.limit("60/minute")
 async def get_recent_alerts(
-    classification: Optional[str] = Query(None, description="Filter by class (SNIa, SNII, AGN, etc.)"),
-    min_probability: float = Query(0.5, ge=0.0, le=1.0, description="Minimum classification confidence"),
-    hours: int = Query(24, ge=1, le=87600, description="Lookback window in hours"),
-    limit: int = Query(50, ge=1, le=500, description="Max results to return"),
-    offset: int = Query(0, ge=0),
+    request: Request,  # Required by slowapi
+    classification: Optional[str] = Query(
+        None, max_length=20, description="Filter by class (SNIa, SNII, AGN, etc.)"
+    ),
+    min_probability: float = Query(0.5, ge=0.0, le=1.0),
+    hours: int = Query(24, ge=1, le=87600),
+    limit: int = Query(12, ge=1, le=100),  # Tightened from 500
+    offset: int = Query(0, ge=0, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Get recent transient alerts, filtered and sorted by last detection.
-
-    This is the primary endpoint for the dashboard's event table.
-    """
+    """Get recent transient alerts, filtered and sorted by last detection."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    # SECURITY: Validate classification against allowlist
+    safe_classification = validate_classification(classification)
 
     base_query = (
         select(Object)
@@ -40,8 +51,8 @@ async def get_recent_alerts(
         .where(Object.classification_probability >= min_probability)
     )
 
-    if classification:
-        base_query = base_query.where(Object.classification == classification)
+    if safe_classification:
+        base_query = base_query.where(Object.classification == safe_classification)
 
     # Total count for pagination
     count_result = await db.execute(
@@ -64,26 +75,26 @@ async def get_recent_alerts(
 
 
 @router.get("/alerts/{oid}")
-async def get_alert_detail(oid: str, db: AsyncSession = Depends(get_db)):
-    """
-    Full detail for a single object: metadata, light curve, cross-matches,
-    and classification probabilities.
-    """
+@limiter.limit("60/minute")
+async def get_alert_detail(request: Request, oid: str, db: AsyncSession = Depends(get_db)):
+    """Full detail for a single object."""
+    # SECURITY: Validate OID format
+    try:
+        oid = validate_oid(oid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid object ID format")
+
     result = await db.execute(select(Object).where(Object.oid == oid))
     obj = result.scalar_one_or_none()
 
     if not obj:
-        raise HTTPException(status_code=404, detail=f"Object {oid} not found")
+        raise HTTPException(status_code=404, detail="Object not found")
 
-    # Fetch light curve
     det_result = await db.execute(
-        select(Detection)
-        .where(Detection.oid == oid)
-        .order_by(Detection.mjd)
+        select(Detection).where(Detection.oid == oid).order_by(Detection.mjd)
     )
     detections = det_result.scalars().all()
 
-    # Fetch classification probabilities
     prob_result = await db.execute(
         select(ClassificationProbability)
         .where(ClassificationProbability.oid == oid)
@@ -106,24 +117,16 @@ async def get_alert_detail(oid: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/alerts/conesearch/query")
+@limiter.limit("30/minute")  # Spatial queries are heavier, lower limit
 async def cone_search(
+    request: Request,
     ra: float = Query(..., ge=0, le=360, description="Right Ascension in degrees"),
     dec: float = Query(..., ge=-90, le=90, description="Declination in degrees"),
     radius: float = Query(60, ge=1, le=3600, description="Search radius in arcseconds"),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Find all objects within a radius of a sky position.
-
-    Uses PostGIS spatial index for efficient queries. This is the standard
-    astronomical query pattern for "what's near this position?"
-    """
-    # PostGIS ST_DWithin uses meters for geography type, convert arcsec to meters
-    # 1 arcsec ~ 30.87 meters at Earth's surface (for sky coordinates, we use degrees)
-    # Actually for geography, ST_DWithin uses meters. But for sky coords,
-    # we use the angular distance directly.
-    radius_deg = radius / 3600.0
-
+    """Find all objects within a radius of a sky position."""
+    # SECURITY: Uses parameterized query, safe from SQL injection
     result = await db.execute(
         text("""
             SELECT oid, ra, dec, classification, classification_probability,
@@ -165,17 +168,15 @@ async def cone_search(
 
 
 @router.get("/stats/summary")
+@limiter.limit("30/minute")
 async def get_summary_stats(
+    request: Request,
     hours: int = Query(24, ge=1, le=87600),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Summary statistics for the dashboard header.
-    Shows counts by classification, total objects, and recent activity.
-    """
+    """Summary statistics for the dashboard."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    # Count by classification
     class_counts = await db.execute(
         select(Object.classification, func.count(Object.oid))
         .where(Object.last_detection >= cutoff)
@@ -183,12 +184,10 @@ async def get_summary_stats(
         .order_by(desc(func.count(Object.oid)))
     )
 
-    # Total objects in window
     total = await db.execute(
         select(func.count(Object.oid)).where(Object.last_detection >= cutoff)
     )
 
-    # Most recent alert
     latest = await db.execute(
         select(Object).order_by(desc(Object.last_detection)).limit(1)
     )
@@ -205,8 +204,9 @@ async def get_summary_stats(
 
 
 @router.get("/classifications")
-async def list_classifications(db: AsyncSession = Depends(get_db)):
-    """List all classification types present in the database with counts."""
+@limiter.limit("30/minute")
+async def list_classifications(request: Request, db: AsyncSession = Depends(get_db)):
+    """List all classification types present in the database."""
     result = await db.execute(
         select(Object.classification, func.count(Object.oid))
         .where(Object.classification.isnot(None))

@@ -1,83 +1,103 @@
 # Rubin Scout
 
-**Filtered, enriched transient alerts from the Vera C. Rubin Observatory and ZTF.**
+**The cosmos for curious humans.**
 
-Rubin Scout is a downstream alert processing tool that connects to astronomical alert brokers (ALeRCE, Pitt-Google), filters for specific transient event classes (supernovae, tidal disruption events, kilonovae), enriches them with cross-catalog data, and serves them through a real-time dashboard and notification system.
+Rubin Scout makes real astronomical discoveries accessible. It pulls live data from telescope alert systems, translates the raw science into plain language, and lets you explore exploding stars, feeding black holes, and neutron star collisions through an interactive dashboard.
 
-## Why This Exists
+It also does something no other downstream tool does: **gravitational wave cross-matching**. When LIGO detects spacetime ripples from a cosmic collision, Rubin Scout searches the optical sky for the flash of light from the same event.
 
-The Rubin Observatory produces up to 7 million alerts per night. Community brokers classify and distribute these alerts, but astronomers managing follow-up observations need filtered, enriched, prioritized events tailored to their science cases. Rubin Scout sits between the brokers and the telescope operators who decide what to observe next.
+## What You Can Do
 
-## Features
+**Browse cosmic events.** The dashboard shows real transient detections from the Zwicky Transient Facility and the Vera C. Rubin Observatory, classified by ALeRCE's machine learning pipeline. Each event is translated into human language with descriptions, constellation locations, and confidence scores.
 
-- **Real-time ingestion** from ALeRCE (REST API + Kafka) and Pitt-Google (GCP Pub/Sub)
-- **Cross-matching** against SIMBAD, NED, and the Transient Name Server
-- **Multi-messenger support** — cross-match optical transients with LIGO/Virgo gravitational wave skymaps
-- **Notification system** — Slack webhooks, email digests, and generic webhooks with customizable filters
-- **Interactive dashboard** — sky map, light curve viewer, event table, nightly highlights
-- **REST API** with cone search, time-range queries, and classification filters
+**Explore gravitational wave events.** Six real LIGO/Virgo detections (GW170817, GW190521, and more) with descriptions of what happened, how far away it was, and a button to search for optical counterparts in the alert database.
+
+**Filter and subscribe.** Filter by event type, confidence level, and time window. Set up notification subscriptions to get alerts via Slack, email, or webhooks when new events match your criteria.
+
+**Query the API.** Every feature is available through a REST API with full Swagger documentation, cone search (spatial queries), and pagination.
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.11+, FastAPI, SQLAlchemy |
-| Database | PostgreSQL + TimescaleDB + PostGIS |
-| Frontend | React, Recharts, Aladin Lite |
-| Streaming | Apache Kafka (ALeRCE), GCP Pub/Sub (Pitt-Google) |
-| Deployment | Docker Compose (local), AWS EC2 + RDS (prod) |
+| Backend | Python 3.13, FastAPI, SQLAlchemy, slowapi |
+| Database | PostgreSQL 17 (Supabase) with PostGIS |
+| Frontend | React 18, Vite, Recharts, Tailwind CSS |
+| Deployment | Vercel (frontend), Render (backend), Supabase (database) |
+| Data Sources | ALeRCE, LIGO/GraceDB, SIMBAD, GWTC catalogs |
+
+## Security
+
+- Rate limiting on all endpoints (60/min reads, 10/min writes) via slowapi
+- OWASP security headers on every response
+- Admin API key required for write endpoints in production
+- Strict input validation with Pydantic models and regex patterns
+- Classification and filter allowlists (no arbitrary input passes through)
+- Email masking in list views
+- Request body size limit (1 MB)
+- CORS restricted to configured origins
+- Swagger docs disabled in production
+- Row Level Security enabled on Supabase tables with user data
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/Namrata-Modha/rubin-scout.git
 cd rubin-scout
 
-# Copy environment template
+# Windows: double-click start.bat
+# Or manually:
 cp .env.example .env
+docker compose up -d db
 
-# Start the stack (PostgreSQL + backend)
-docker-compose up -d
-
-# Run database migrations
 cd backend
 pip install -r requirements.txt
-alembic upgrade head
+uvicorn app.main:app --reload
 
-# Verify ALeRCE connection
-python -m scripts.verify_connection
-
-# Start the backend
-uvicorn app.main:app --reload --port 8000
-
-# In another terminal, start the frontend
+# In another terminal:
 cd frontend
 npm install
 npm run dev
 ```
 
-API docs will be available at `http://localhost:8000/docs`
+Dashboard at http://localhost:5173. API docs at http://localhost:8000/docs.
 
-## Architecture
+See [docs/getting-started.md](docs/getting-started.md) for detailed setup instructions.
+
+## Project Structure
 
 ```
-ALeRCE API/Kafka ──┐
-                    ├──▶ Ingestion Workers ──▶ PostgreSQL ──▶ FastAPI ──▶ React Dashboard
-Pitt-Google Pub/Sub ┤                              │                        │
-                    │                         Enrichment              WebSocket
-GCN/GWOSC ─────────┘                        (SIMBAD, NED)          (live alerts)
-                                                  │
-                                            Notifications
-                                         (Slack, Email, Webhook)
+rubin-scout/
+├── backend/                 Python FastAPI backend
+│   ├── app/
+│   │   ├── api/             Route handlers (alerts, GW, subscriptions)
+│   │   ├── ingestion/       ALeRCE data pulling and scheduling
+│   │   ├── enrichment/      SIMBAD cross-matching, GW cross-matching
+│   │   ├── models/          SQLAlchemy ORM models
+│   │   ├── notifications/   Slack, email, webhook delivery
+│   │   ├── security.py      Rate limiting, headers, admin key
+│   │   └── validation.py    Input validation, allowlists, patterns
+│   ├── tests/
+│   └── sql/                 Database schema
+├── frontend/                React + Vite dashboard
+│   └── src/
+│       ├── components/      SkyMap, AlertTable, LightCurveChart, etc.
+│       ├── pages/           Dashboard, AlertDetail, GravitationalWaves
+│       └── lib/             API client, cosmos translation layer
+├── notebooks/               Jupyter exploration notebooks
+├── scripts/                 CLI utilities (seed, verify, diagnose)
+├── docs/                    Architecture, science guide, getting started
+├── start.bat / stop.bat     Windows one-click start/stop
+└── render.yaml              Render deployment config
 ```
 
-## Data Sources
+## Data Sources and Attribution
 
-- [ALeRCE Broker](https://alerce.science) — ML-classified alerts from ZTF and Rubin/LSST
-- [Pitt-Google Broker](https://pitt-broker.readthedocs.io) — Cloud-native alert distribution
-- [GWOSC](https://gwosc.org) — Gravitational wave open science data
-- [SIMBAD](https://simbad.u-strasbg.fr) / [NED](https://ned.ipac.caltech.edu) — Astronomical object catalogs
+- [ALeRCE Broker](https://alerce.science) for ML-classified transient alerts. Cite: Forster et al. (2021), AJ, 161, 242
+- [Zwicky Transient Facility](https://www.ztf.caltech.edu) for optical survey data. Cite: Bellm et al. (2019), PASP, 131, 018002
+- [LIGO/Virgo/KAGRA](https://gwosc.org) for gravitational wave data. Cite per event as specified by LVK
+- [SIMBAD](https://simbad.u-strasbg.fr) for astronomical object cross-matching
+- [Astropy](https://www.astropy.org) for coordinate transforms and time conversions
 
 ## Contributing
 
@@ -86,7 +106,3 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-This project uses data from the Vera C. Rubin Observatory, the Zwicky Transient Facility, and the LIGO/Virgo/KAGRA collaboration. We acknowledge the ALeRCE broker team and the Pitt-Google broker team for providing open access to classified alert streams.

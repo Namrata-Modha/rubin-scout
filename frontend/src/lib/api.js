@@ -1,9 +1,12 @@
 /**
  * Rubin Scout API client.
- * All endpoints are relative to the FastAPI backend.
+ * In development: proxied through Vite to localhost:8000
+ * In production: hits the Render backend URL directly
  */
 
-const API_BASE = "/api";
+const API_BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : "/api";
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(`${API_BASE}${url}`, {

@@ -2,91 +2,148 @@
 
 ## System Overview
 
-Rubin Scout is a downstream alert processing tool that sits between community alert brokers (ALeRCE, Pitt-Google) and end-user scientists. It ingests, enriches, filters, and serves transient astronomical alerts.
+Rubin Scout is a downstream alert processing tool that ingests classified transient alerts from community brokers, enriches them with catalog cross-matches, and serves them through a secured REST API and interactive dashboard. Its unique feature is gravitational wave cross-matching: finding optical counterparts to LIGO detections.
 
 ```
                 ┌──────────────────────────────────────────┐
-                │             UPSTREAM BROKERS              │
+                │             UPSTREAM SOURCES              │
                 │                                          │
-                │  ALeRCE ────┐    Pitt-Google ──┐         │
-                │  (API/Kafka) │    (Pub/Sub)     │         │
-                └──────────────┼─────────────────┼─────────┘
-                               │                 │
-                               ▼                 ▼
+                │  ALeRCE ────┐    LIGO/GraceDB ──┐        │
+                │  (API/Kafka) │    (GWTC events)  │        │
+                │              │                   │        │
+                │  SIMBAD ─────┤    (cross-match)  │        │
+                └──────────────┼───────────────────┼────────┘
+                               │                   │
+                               ▼                   ▼
                 ┌──────────────────────────────────────────┐
-                │          INGESTION LAYER                  │
+                │          BACKEND (FastAPI)                 │
                 │                                          │
-                │  Polling Worker  │  Kafka Consumer        │
-                │  (MVP, 15min)   │  (real-time, Week 5)   │
-                └────────────────┬─────────────────────────┘
-                                 │
-                                 ▼
-                ┌──────────────────────────────────────────┐
-                │          ENRICHMENT LAYER                 │
+                │  ┌─────────────┐  ┌──────────────────┐   │
+                │  │ Ingestion   │  │ GW Cross-Match   │   │
+                │  │ (ALeRCE     │  │ (skymap centroid  │   │
+                │  │  polling)   │  │  + time window)   │   │
+                │  └──────┬──────┘  └────────┬─────────┘   │
+                │         │                  │             │
+                │  ┌──────┴──────────────────┴─────────┐   │
+                │  │       Security Layer               │   │
+                │  │  Rate limiting (slowapi)           │   │
+                │  │  Input validation (Pydantic)       │   │
+                │  │  Admin API key (write endpoints)   │   │
+                │  │  OWASP security headers            │   │
+                │  │  Request size limiting              │   │
+                │  └──────┬────────────────────────────┘   │
+                │         │                                │
+                │  ┌──────┴──────┐                         │
+                │  │ PostgreSQL  │                         │
+                │  │ + PostGIS   │                         │
+                │  │ (Supabase)  │                         │
+                │  └─────────────┘                         │
+                └──────────────┬───────────────────────────┘
+                               │
+                ┌──────────────┴───────────────────────────┐
+                │          FRONTEND (React)                  │
                 │                                          │
-                │  SIMBAD cross-match (5" radius)          │
-                │  NED cross-match (planned)               │
-                │  TNS check (planned)                     │
-                │  GW skymap cross-match (HEALPix)         │
-                └────────────────┬─────────────────────────┘
-                                 │
-                                 ▼
-                ┌──────────────────────────────────────────┐
-                │            DATA LAYER                     │
+                │  Dashboard ─── GW Events ─── Alert Detail │
+                │  Sky Map      Cross-Match    Light Curve   │
+                │  Card Grid    Candidates     Probabilities │
                 │                                          │
-                │  PostgreSQL 16                            │
-                │  + TimescaleDB (time-series hypertables)  │
-                │  + PostGIS (spatial cone search)          │
-                └────────────────┬─────────────────────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    ▼            ▼            ▼
-              ┌──────────┐ ┌──────────┐ ┌──────────┐
-              │ FastAPI   │ │ Notifs   │ │ React    │
-              │ REST API  │ │ Slack/   │ │ Dashboard│
-              │ + WebSocket│ │ Email   │ │          │
-              └──────────┘ └──────────┘ └──────────┘
+                │  cosmos.js (translation layer)            │
+                │  "SNIa" → "Exploding white dwarf 💥"      │
+                └──────────────────────────────────────────┘
 ```
+
+## Security Architecture
+
+Security is layered, not bolted on. Every request passes through multiple checks.
+
+**Rate Limiting.** slowapi with in-memory storage. Defaults: 60 req/min for reads, 30/min for spatial queries, 10/min for writes, 5/min for seed endpoints. Returns 429 with Retry-After header.
+
+**Input Validation.** All inputs validated before reaching the database:
+- Object IDs validated against ZTF naming regex (`ZTF\d{2}[a-z]{7,10}`)
+- GW superevent IDs validated against LIGO pattern (`(GW|S)\d{6}[a-z]?`)
+- Classification filters checked against an allowlist of valid ALeRCE classes
+- Subscription emails validated with regex, webhook URLs format-checked
+- `filter_config` JSON keys validated against an allowlist
+- All strings have length limits
+
+**Admin API Key.** Write endpoints (create/update/delete subscriptions, seed GW events) require an `X-API-Key` header in production. In development, all endpoints are open. The key is stored as `ADMIN_API_KEY` environment variable and compared using constant-time `secrets.compare_digest` to prevent timing attacks.
+
+**Security Headers.** Every response includes: X-Content-Type-Options: nosniff, X-Frame-Options: DENY, X-XSS-Protection: 1; mode=block, Referrer-Policy: strict-origin-when-cross-origin, Permissions-Policy restricting camera/mic/geolocation.
+
+**CORS.** Restricted to configured origins only. Methods limited to GET/POST/PATCH/DELETE. Headers limited to Content-Type and X-API-Key. Credentials disabled.
+
+**Request Size.** 1 MB body limit prevents oversized payloads.
+
+**Database.** Supabase with Row Level Security enabled on `subscriptions` and `ingestion_log` tables. All queries use SQLAlchemy ORM or parameterized `text()` queries (no string concatenation).
 
 ## Database Design
 
-The schema is designed around two core entities: **Objects** (astronomical sources) and **Detections** (individual brightness measurements).
+Seven tables, designed around two core entities: **Objects** (astronomical sources) and **Detections** (brightness measurements).
 
-**objects** is the primary table. One row per unique transient source, identified by ALeRCE's `oid`. Contains sky position (RA/Dec as float + PostGIS geography for spatial indexing), classification from ALeRCE, and cross-match results from SIMBAD.
+**objects** -- One row per unique transient. Contains sky position (RA/Dec + PostGIS geography for spatial indexing), ALeRCE classification, and SIMBAD cross-match results.
 
-**detections** is a TimescaleDB hypertable partitioned by `detection_time`. Stores the full light curve (brightness over time) for each object across multiple photometric bands. Hypertable partitioning enables efficient time-range queries across millions of rows.
+**detections** -- Individual brightness measurements forming each object's light curve. Indexed by (oid, detection_time DESC) for fast light curve retrieval.
 
-**classification_probabilities** stores the full probability vector from ALeRCE's classifiers, not just the top prediction. This lets scientists evaluate classification confidence.
+**classification_probabilities** -- Full probability vector from ALeRCE's classifiers, not just the top prediction. Unique constraint on (oid, classifier_name, class_name).
 
-**subscriptions** stores user-defined notification filters as JSONB, enabling flexible boolean filter combinations without schema changes.
+**gw_events** -- LIGO/Virgo gravitational wave events with classification probabilities (BNS, NSBH, BBH, Terrestrial), skymap URLs, and human descriptions.
 
-**gw_events** and **gw_candidates** support gravitational wave multi-messenger cross-matching.
+**gw_candidates** -- Optical counterpart candidates linked to GW events via cross-matching.
+
+**subscriptions** -- Notification filter configs stored as JSONB. RLS enabled.
+
+**ingestion_log** -- Tracks ingestion runs for monitoring and deduplication. RLS enabled.
+
+## Gravitational Wave Cross-Matching
+
+The unique feature. When a user clicks "Search for optical counterparts" on a GW event:
+
+1. Load the event's sky position (RA/Dec centroid) and 90% credible area
+2. Estimate the effective search radius from the credible area (r = sqrt(area/pi))
+3. Define a time window (7 days before to 30 days after the GW event)
+4. Query PostGIS for all objects within the search radius AND time window
+5. Store candidate associations in `gw_candidates` table
+6. Return results with angular distances and "in 90% region" flags
+
+For poorly localized events (no centroid available), falls back to time-window-only search filtered by transient classifications most likely to be GW counterparts (SNe, TDE, KN, novae).
+
+## Cosmos Translation Layer
+
+The frontend's `cosmos.js` module transforms raw astronomy data into accessible language:
+
+- Classification codes mapped to names, emoji, one-line summaries, and full descriptions
+- RA/Dec coordinates mapped to approximate constellation names
+- Timestamps formatted as relative time ("3 days ago") and human dates
+- Each alert gets a generated summary sentence combining type, location, and observation history
+
+This is the design philosophy that differentiates Rubin Scout from ALeRCE's own explorer.
+
+## Deployment Stack
+
+**Local development:** Docker Compose for PostgreSQL. Backend and frontend run directly with hot-reload. `start.bat` / `stop.bat` for one-click Windows operation.
+
+**Production:**
+- **Supabase** (US East) -- PostgreSQL 17 with PostGIS. Free tier, no expiry.
+- **Render** -- Free Python web service for FastAPI backend. Auto-deploys from GitHub.
+- **Vercel** -- Free frontend hosting. Auto-deploys from GitHub.
+
+Environment variables for production:
+- `DATABASE_URL` -- Supabase connection string
+- `APP_ENV` -- `production` (disables Swagger docs, enforces admin key)
+- `CORS_ORIGINS` -- Vercel frontend URL
+- `ADMIN_API_KEY` -- Generated token for write endpoints
+- `VITE_API_URL` -- Render backend URL (frontend env var)
 
 ## API Design
 
-FastAPI auto-generates OpenAPI documentation at `/docs`. Key design decisions:
+FastAPI auto-generates OpenAPI docs at `/docs` (development only).
 
-- All coordinates use ICRS (J2000) in degrees, the astronomical standard.
-- Time parameters accept both ISO 8601 strings and hour-based lookback windows.
-- Cone search uses PostGIS ST_DWithin for proper great-circle distance on the celestial sphere.
-- Pagination uses limit/offset for simplicity. Cursor-based pagination is a planned improvement for high-volume use.
-- Classification probabilities are always included in detail responses so scientists can make informed decisions about follow-up priority.
+Key endpoints:
+- `GET /api/alerts/recent` -- Paginated alerts with classification, time, and probability filters
+- `GET /api/alerts/{oid}` -- Full object detail with light curve and probabilities
+- `GET /api/alerts/conesearch/query` -- Spatial search by RA/Dec/radius
+- `GET /api/gw/events` -- All gravitational wave events
+- `POST /api/gw/events/{id}/crossmatch` -- Run optical counterpart search
+- `POST /api/subscriptions` -- Create notification subscription (admin key in prod)
 
-## Frontend Architecture
-
-React with Vite. Key components:
-
-- **SkyMap** renders a Mollweide all-sky projection using HTML Canvas, with alerts plotted as colored dots by classification. Supports hover tooltips and click-to-navigate.
-- **LightCurveChart** uses Recharts ScatterChart with error bars and multi-band color coding.
-- **AlertTable** is the primary data view with sortable columns and filter integration.
-- **StatsBar** shows summary statistics pulled from the `/stats/summary` endpoint.
-
-The frontend proxies `/api` requests to the FastAPI backend via Vite's dev server proxy. In production, both are served behind a reverse proxy (nginx or Vercel).
-
-## Deployment
-
-**Local development:** Docker Compose runs PostgreSQL with TimescaleDB. Backend and frontend run directly with hot-reload.
-
-**Production:** EC2 instance (t3.small) for the backend + ingestion worker. RDS for PostgreSQL. Vercel for the React frontend. The ingestion worker and FastAPI server run as separate processes on the same EC2 instance.
-
-**Scaling considerations:** The current architecture handles ZTF-volume alerts easily (100K-1M/night). For full LSST volume (10M/night), the Kafka consumer would need horizontal scaling (multiple consumer group instances) and the database would benefit from more aggressive TimescaleDB compression policies on historical data.
+All coordinates use ICRS (J2000) in degrees. Time parameters accept hour-based lookback windows (max 87600 = 10 years). Pagination uses limit/offset.

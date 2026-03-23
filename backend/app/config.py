@@ -5,9 +5,8 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Database
-    database_url: str = "postgresql+asyncpg://rubinscout:rubinscout@localhost:5432/rubinscout"
-    database_url_sync: str = "postgresql://rubinscout:rubinscout@localhost:5432/rubinscout"
+    # Database — accepts a standard postgresql:// URL and auto-converts for async
+    database_url: str = "postgresql://rubinscout:rubinscout@localhost:5432/rubinscout"
 
     # ALeRCE
     alerce_api_url: str = "https://api.alerce.online"
@@ -38,6 +37,32 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     notification_from_email: str = "alerts@rubinscout.dev"
+
+    # Security
+    # Admin API key for write endpoints (seed, subscriptions).
+    # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    # Leave empty in development to allow unrestricted access.
+    admin_api_key: str = ""
+
+    @property
+    def async_database_url(self) -> str:
+        """Convert standard postgresql:// to asyncpg driver URL."""
+        url = self.database_url
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url
+
+    @property
+    def sync_database_url(self) -> str:
+        """Ensure standard postgresql:// for sync connections."""
+        url = self.database_url
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if "+asyncpg" in url:
+            url = url.replace("+asyncpg", "")
+        return url
 
     @property
     def cors_origin_list(self) -> list[str]:

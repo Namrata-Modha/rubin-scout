@@ -1,52 +1,34 @@
-"""API routes for managing notification subscriptions."""
+"""
+API routes for managing notification subscriptions.
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+Security:
+- Write endpoints (create, update, delete) require admin API key in production
+- All inputs validated with strict Pydantic models
+- Rate limited: 10 req/min for writes
+- Email addresses validated
+- Webhook URLs validated (format check)
+- filter_config validated against key allowlist
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.models import Subscription
+from app.security import limiter, require_admin_key
+from app.validation import SubscriptionCreateRequest, SubscriptionUpdateRequest
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
 
-class SubscriptionCreate(BaseModel):
-    name: str
-    user_email: str
-    filter_config: dict = {}
-    notification_method: str = "email"
-    webhook_url: str | None = None
-    slack_channel: str | None = None
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "Nearby bright supernovae",
-                "user_email": "nam@example.com",
-                "filter_config": {
-                    "classification": ["SNIa", "SNII"],
-                    "min_probability": 0.8,
-                    "exclude_known_variables": True,
-                },
-                "notification_method": "slack",
-                "webhook_url": "https://hooks.slack.com/services/...",
-            }
-        }
-
-
-class SubscriptionUpdate(BaseModel):
-    name: str | None = None
-    filter_config: dict | None = None
-    notification_method: str | None = None
-    webhook_url: str | None = None
-    active: bool | None = None
-
-
 @router.get("/")
-async def list_subscriptions(db: AsyncSession = Depends(get_db)):
+@limiter.limit("30/minute")
+async def list_subscriptions(request: Request, db: AsyncSession = Depends(get_db)):
     """List all subscriptions."""
-    result = await db.execute(select(Subscription).order_by(Subscription.created_at.desc()))
+    result = await db.execute(
+        select(Subscription).order_by(Subscription.created_at.desc()).limit(100)
+    )
     subs = result.scalars().all()
     return {
         "count": len(subs),
@@ -54,7 +36,8 @@ async def list_subscriptions(db: AsyncSession = Depends(get_db)):
             {
                 "id": s.id,
                 "name": s.name,
-                "user_email": s.user_email,
+                # SECURITY: Partially mask email in list view
+                "user_email": _mask_email(s.user_email),
                 "filter_config": s.filter_config,
                 "notification_method": s.notification_method,
                 "active": s.active,
@@ -65,9 +48,29 @@ async def list_subscriptions(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/", status_code=201)
-async def create_subscription(payload: SubscriptionCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new notification subscription."""
+@router.post("/", status_code=201, dependencies=[Depends(require_admin_key)])
+@limiter.limit("10/minute")
+async def create_subscription(
+    request: Request,
+    payload: SubscriptionCreateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new notification subscription.
+    Requires X-API-Key header in production.
+    """
+    # Check subscription limit per email (prevent abuse)
+    existing_count = await db.execute(
+        select(Subscription)
+        .where(Subscription.user_email == payload.user_email)
+        .where(Subscription.active == True)
+    )
+    if len(existing_count.scalars().all()) >= 10:
+        raise HTTPException(
+            status_code=429,
+            detail="Maximum 10 active subscriptions per email address."
+        )
+
     sub = Subscription(
         name=payload.name,
         user_email=payload.user_email,
@@ -83,11 +86,18 @@ async def create_subscription(payload: SubscriptionCreate, db: AsyncSession = De
     return {"id": sub.id, "name": sub.name, "status": "created"}
 
 
-@router.patch("/{sub_id}")
+@router.patch("/{sub_id}", dependencies=[Depends(require_admin_key)])
+@limiter.limit("10/minute")
 async def update_subscription(
-    sub_id: int, payload: SubscriptionUpdate, db: AsyncSession = Depends(get_db)
+    request: Request,
+    sub_id: int,
+    payload: SubscriptionUpdateRequest,
+    db: AsyncSession = Depends(get_db),
 ):
-    """Update an existing subscription."""
+    """Update a subscription. Requires X-API-Key in production."""
+    if sub_id <= 0 or sub_id > 2147483647:
+        raise HTTPException(status_code=400, detail="Invalid subscription ID")
+
     result = await db.execute(select(Subscription).where(Subscription.id == sub_id))
     sub = result.scalar_one_or_none()
     if not sub:
@@ -103,9 +113,17 @@ async def update_subscription(
     return {"id": sub_id, "status": "updated"}
 
 
-@router.delete("/{sub_id}")
-async def delete_subscription(sub_id: int, db: AsyncSession = Depends(get_db)):
-    """Delete a subscription."""
+@router.delete("/{sub_id}", dependencies=[Depends(require_admin_key)])
+@limiter.limit("10/minute")
+async def delete_subscription(
+    request: Request,
+    sub_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a subscription. Requires X-API-Key in production."""
+    if sub_id <= 0 or sub_id > 2147483647:
+        raise HTTPException(status_code=400, detail="Invalid subscription ID")
+
     result = await db.execute(select(Subscription).where(Subscription.id == sub_id))
     sub = result.scalar_one_or_none()
     if not sub:
@@ -115,3 +133,13 @@ async def delete_subscription(sub_id: int, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"id": sub_id, "status": "deleted"}
+
+
+def _mask_email(email: str) -> str:
+    """Partially mask email for privacy in list views. nam@example.com -> n**@example.com"""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.rsplit("@", 1)
+    if len(local) <= 1:
+        return f"*@{domain}"
+    return f"{local[0]}{'*' * (len(local) - 1)}@{domain}"

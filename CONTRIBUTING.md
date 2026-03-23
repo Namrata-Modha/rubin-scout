@@ -1,74 +1,98 @@
 # Contributing to Rubin Scout
 
-Thanks for your interest in contributing! Whether you're an astronomer who wants better tools, a developer who loves space, or both, there's a place for you here.
+Thank you for your interest in contributing. Whether you're fixing a bug, adding a feature, improving documentation, or suggesting an idea, your help is welcome.
 
-## Quick Start for Contributors
+## Getting Started
 
-```bash
-# Fork and clone the repo
-git clone https://github.com/<your-username>/rubin-scout.git
-cd rubin-scout
+1. Fork the repository and clone your fork
+2. `cp .env.example .env`
+3. `docker compose up -d db`
+4. `cd backend && pip install -r requirements.txt`
+5. `uvicorn app.main:app --reload`
+6. In another terminal: `cd frontend && npm install && npm run dev`
 
-# Start the database
-docker-compose up db -d
+Or on Windows, just run `start.bat`.
 
-# Backend setup
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+## Project Structure
 
-# Initialize the database
-psql -U rubinscout -d rubinscout -f sql/init.sql
-
-# Run the backend
-uvicorn app.main:app --reload
-
-# Frontend setup (separate terminal)
-cd frontend
-npm install
-npm run dev
 ```
+backend/app/
+  api/              REST endpoints (alerts, GW events, subscriptions)
+  ingestion/        ALeRCE data pulling and scheduling
+  enrichment/       SIMBAD cross-matching, GW skymap cross-matching
+  models/           SQLAlchemy ORM models (7 tables)
+  notifications/    Slack, email, webhook delivery
+  security.py       Rate limiting, security headers, admin key
+  validation.py     Input validation, regex patterns, allowlists
 
-## Types of Contributions
-
-**Code contributions:** Bug fixes, new features, performance improvements, test coverage. Check the Issues tab for `good first issue` and `help wanted` labels.
-
-**Astronomy expertise:** If you're an astronomer or astrophysics student, we need your help validating cross-matching logic, improving classification displays, and ensuring scientific accuracy. Open an issue describing what could be better.
-
-**Documentation:** Improve setup guides, add API usage examples, write tutorials. The `docs/` folder and Jupyter notebooks in `notebooks/` are great starting points.
-
-**Bug reports:** Found something broken? Open an issue with steps to reproduce, expected behavior, and actual behavior.
+frontend/src/
+  components/       SkyMap, AlertTable, LightCurveChart, ClassBadge, StatsBar
+  pages/            Dashboard, AlertDetail, GravitationalWaves
+  lib/              API client (api.js), cosmos translations (cosmos.js)
+```
 
 ## Development Workflow
 
-1. Create a branch from `main`: `git checkout -b feature/your-feature`
-2. Make your changes
-3. Run the linter: `cd backend && ruff check app/`
-4. Run tests: `cd backend && python -m pytest tests/ -v`
-5. Commit with a clear message: `git commit -m "Add cone search radius validation"`
-6. Push and open a PR against `main`
+1. Create a branch from `main` with a descriptive name (`feature/healpix-skymap`, `fix/simbad-columns`)
+2. Make focused commits
+3. Add or update tests for backend logic changes
+4. Run linting: `cd backend && ruff check app/`
+5. Open a pull request against `main`
+
+## Areas Where Help Is Especially Welcome
+
+**Backend (Python):**
+- Full HEALPix skymap parsing for GW cross-matching (replace circular approximation)
+- Additional broker integrations (Fink, Lasair, ANTARES)
+- NED and TNS cross-matching
+- Kafka consumer for real-time ALeRCE streaming
+- Luminosity distance filtering for GW candidates
+
+**Frontend (React):**
+- Mobile-responsive layout
+- Interactive sky map improvements (zoom, pan, click to filter)
+- Light curve template overlay (compare against known SN models)
+- GW skymap visualization (plot the probability contours on the sky map)
+
+**Science and Documentation:**
+- More GW events from GWTC-4.0
+- Validation against known transient catalogs
+- Jupyter notebooks demonstrating science use cases
+- Tutorials for astronomers and curious non-experts
+
+**Infrastructure:**
+- Monitoring and alerting (health check endpoints exist, need dashboarding)
+- Load testing for high-volume ingestion
+- CI/CD improvements
+
+## Security
+
+Rubin Scout takes security seriously. If you're making changes:
+
+- All user inputs must be validated (see `validation.py` for patterns)
+- New string parameters need length limits
+- New endpoints need rate limiting via `@limiter.limit()`
+- Write endpoints need `dependencies=[Depends(require_admin_key)]`
+- Never log database URLs, API keys, or user emails
+- Use parameterized queries only (SQLAlchemy ORM or `text()` with `:param`)
+- Run `ruff check app/` before committing
 
 ## Code Style
 
-**Python (backend):** We use `ruff` for linting. Run `ruff check app/` before committing. Follow PEP 8. Type hints are encouraged but not required. Docstrings on all public functions.
+**Python:** Use `ruff` for linting and formatting. Type hints encouraged. Target Python 3.11+.
 
-**JavaScript (frontend):** Standard React conventions. Functional components with hooks. Tailwind for styling. No CSS-in-JS.
+**JavaScript/React:** Functional components with hooks. Tailwind CSS for styling. No external UI libraries beyond what's already included (Recharts, Lucide icons).
 
-**Commits:** Write clear, descriptive commit messages. One logical change per commit.
+**Commits:** Clear summary line, blank line, then details if needed. No enforced format.
 
-## Architecture Decisions
+## Reporting Issues
 
-If you're proposing a significant change (new data source, database schema change, new dependency), please open an issue first to discuss the approach. This saves everyone time and helps maintain a coherent architecture.
+Open a GitHub issue with a clear description and steps to reproduce. Label with `bug`, `feature`, `documentation`, or `question`.
 
-## Astronomy-Specific Notes
+## Code of Conduct
 
-- **Coordinates:** We use ICRS (J2000) for all RA/Dec values, stored in degrees.
-- **Time:** Modified Julian Date (MJD) from ALeRCE, converted to UTC timestamps for storage.
-- **Magnitudes:** AB magnitude system. Remember, lower magnitude = brighter.
-- **Cross-matching:** Default radius is 5 arcseconds for SIMBAD, adjustable per query.
-- **Data attribution:** Always cite the data sources (ALeRCE, ZTF, Rubin) in any public-facing outputs.
+Be kind, be respectful, be collaborative. We're building tools for science, and everyone contributing deserves a welcoming environment regardless of background or experience.
 
-## Questions?
+## License
 
-Open an issue or start a discussion on the repo. There are no dumb questions, especially about the astronomy side of things.
+By contributing, you agree that your contributions will be licensed under the MIT License.

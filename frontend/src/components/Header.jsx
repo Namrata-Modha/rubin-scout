@@ -23,7 +23,7 @@ export default function Header() {
             GW Events
           </Link>
           <a
-            href="http://localhost:8000/docs"
+            href={`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/docs`}
             target="_blank"
             rel="noopener"
             className="hover:text-white transition-colors"

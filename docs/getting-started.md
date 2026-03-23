@@ -1,12 +1,12 @@
 # Getting Started
 
-This guide gets you from zero to a running Rubin Scout instance with real astronomical data in about 15 minutes.
+Get Rubin Scout running locally with real astronomical data in about 15 minutes.
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (tested on 3.13)
 - Node.js 18+
-- Docker and Docker Compose (for PostgreSQL)
+- Docker Desktop (for PostgreSQL)
 - Git
 
 ## Step 1: Clone and Configure
@@ -17,11 +17,11 @@ cd rubin-scout
 cp .env.example .env
 ```
 
-No changes needed in `.env` for local development. The defaults work out of the box.
+No changes needed in `.env` for local development. The defaults connect to a local Docker PostgreSQL instance and run in development mode (no API key required for write endpoints).
 
 ## Step 2: Verify Your Connection
 
-Before touching Docker or databases, confirm you can reach ALeRCE:
+Confirm you can reach the upstream data sources before touching Docker or databases:
 
 ```bash
 cd backend
@@ -30,31 +30,32 @@ cd ..
 python -m scripts.verify_connection
 ```
 
-You should see checkmarks for ALeRCE, light curve fetch, and SIMBAD. If anything fails, check your internet connection. No API keys are needed.
+You should see checkmarks for ALeRCE, SIMBAD, and the light curve fetch. No API keys needed.
 
 ## Step 3: Start the Database
 
 ```bash
-docker-compose up -d db
+docker compose up -d db
 ```
 
-This starts PostgreSQL 16 with TimescaleDB and PostGIS extensions. The `init.sql` script runs automatically and creates all tables.
+This starts PostgreSQL 17 with PostGIS. The `init.sql` script creates all tables, indexes, and helper functions automatically.
 
 Verify it's running:
+
 ```bash
-docker-compose logs db | tail -5
+docker compose logs db | tail -5
+# Look for "database system is ready to accept connections"
 ```
 
 ## Step 4: Seed the Database
 
-Pull a week of real supernova and AGN data from ALeRCE:
+Pull real transient data from ALeRCE and seed gravitational wave events:
 
 ```bash
-cd backend
 python -m scripts.seed_database
 ```
 
-This takes 1-3 minutes depending on how much data ALeRCE has from the past week. You'll see progress logs for each class of transient.
+This fetches ~75 real objects (supernovae, AGN) with full light curves, plus 6 notable gravitational wave events from LIGO's catalogs. Takes 1-3 minutes.
 
 ## Step 5: Start the Backend
 
@@ -63,7 +64,12 @@ cd backend
 uvicorn app.main:app --reload --port 8000
 ```
 
-Open http://localhost:8000/docs in your browser. You should see the Swagger UI with all endpoints. Try clicking "GET /api/alerts/recent" and hitting "Execute" to see real alert data.
+Open http://localhost:8000/docs for the interactive Swagger UI. Try these endpoints:
+
+- `GET /api/alerts/recent?hours=87600` -- all seeded alerts
+- `GET /api/gw/events` -- gravitational wave events
+- `GET /api/classifications` -- count of objects by type
+- `POST /api/gw/events/GW231123/crossmatch` -- find optical counterparts to a GW event
 
 ## Step 6: Start the Frontend
 
@@ -75,50 +81,67 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. You should see the Rubin Scout dashboard with a filterable table of transient alerts, stats bar, and classification filters.
+Open http://localhost:5173. You should see the dashboard with event cards, sky map, and filters.
 
-Click any object ID to see its full light curve and classification probabilities.
+Navigate to http://localhost:5173/gravitational-waves to explore GW events and run cross-matching.
 
-## Step 7: Start the Ingestion Worker (Optional)
+## Windows Shortcut
 
-To keep pulling new alerts automatically:
+Instead of running three terminals manually, just double-click `start.bat` in the project root. It starts Docker, the backend, and the frontend, then opens your browser.
+
+Use `stop.bat` to shut everything down.
+
+## Step 7: Seed More Data (Optional)
+
+The default seed pulls 25 objects per class. To get more data, run the diagnostic script to check what's available:
 
 ```bash
-cd backend
-python -m app.ingestion.scheduler
+python scripts\diagnose_alerce.py
 ```
-
-This polls ALeRCE every 15 minutes (configurable in `.env`) and adds new objects to your database.
 
 ## Project Structure
 
 ```
-rubin-scout/
-├── backend/              Python FastAPI backend
-│   ├── app/
-│   │   ├── api/          REST endpoint handlers
-│   │   ├── ingestion/    ALeRCE data pulling
-│   │   ├── enrichment/   SIMBAD cross-matching
-│   │   ├── models/       SQLAlchemy ORM models
-│   │   └── notifications/  Slack/email alerts
-│   ├── tests/            Pytest test suite
-│   └── sql/              Database schema
-├── frontend/             React + Vite dashboard
-│   └── src/
-│       ├── components/   Reusable UI components
-│       ├── pages/        Dashboard and detail views
-│       └── lib/          API client utilities
-├── notebooks/            Jupyter exploration notebooks
-├── scripts/              CLI utilities
-└── docs/                 Documentation
+backend/app/
+  api/              Route handlers with rate limiting and input validation
+  ingestion/        ALeRCE polling (15-min intervals) and Kafka consumer (planned)
+  enrichment/       SIMBAD cross-matching, GW skymap cross-matching
+  models/           7 SQLAlchemy ORM models
+  notifications/    Slack webhooks, email digests, generic webhooks
+  security.py       Rate limiter, security headers, admin API key
+  validation.py     Input schemas, regex patterns, allowlists
+
+frontend/src/
+  components/       SkyMap (Mollweide projection), AlertTable (card grid),
+                    LightCurveChart (Recharts), ClassBadge, StatsBar
+  pages/            Dashboard, AlertDetail, GravitationalWaves
+  lib/              API client (api.js), cosmos translation layer (cosmos.js)
 ```
+
+## Environment Variables
+
+Key settings in `.env`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | local Docker | PostgreSQL connection string |
+| `APP_ENV` | development | Set to `production` for deployed version |
+| `CORS_ORIGINS` | localhost | Comma-separated allowed origins |
+| `ADMIN_API_KEY` | (empty) | Required in production for write endpoints |
+| `VITE_API_URL` | (empty) | Backend URL for frontend in production |
 
 ## Common Issues
 
-**"Connection refused" on the frontend:** Make sure the backend is running on port 8000. The Vite dev server proxies `/api` requests to `localhost:8000`.
+**Empty dashboard:** Default time filter is "All" (87600 hours). If you still see nothing, run the seed script. Without data in PostgreSQL, the API returns empty results.
 
-**Empty dashboard:** Run the seed script first. Without data in PostgreSQL, the API returns empty results.
+**"Connection refused" on frontend:** Make sure the backend is running on port 8000. Vite proxies `/api` requests there.
 
-**SIMBAD timeout:** SIMBAD occasionally has downtime. Cross-matching will retry on the next ingestion cycle. The rest of the pipeline works without it.
+**SIMBAD timeout:** SIMBAD occasionally has downtime. Cross-matching retries on the next ingestion cycle. Everything else works without it.
 
-**Docker port conflict:** If port 5432 is already in use, change it in `docker-compose.yml` and update `DATABASE_URL` in `.env`.
+**Docker port conflict:** If port 5432 is in use, change it in `docker-compose.yml` and update `DATABASE_URL` in `.env`.
+
+**Rate limit 429 errors:** The API allows 60 requests/minute for reads and 10/minute for writes. If you're scripting against the API, add a small delay between requests.
+
+## Deployment
+
+For production deployment (Vercel + Render + Supabase), see [docs/architecture.md](architecture.md).
