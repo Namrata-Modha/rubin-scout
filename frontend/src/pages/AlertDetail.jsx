@@ -95,7 +95,7 @@ export default function AlertDetail() {
               rel="noopener"
               className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/50 transition-colors"
             >
-              Raw data <ExternalLink className="w-3 h-3" />
+              {obj.broker_source === "tns" ? "View on TNS" : "Raw data"} <ExternalLink className="w-3 h-3" />
             </a>
           )}
         </div>

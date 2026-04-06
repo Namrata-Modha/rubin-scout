@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.config import get_settings
 from app.database import async_session
 from app.ingestion.alerce_service import AlerceIngestionService
+from app.ingestion.tns_service import TNSIngestionService
 from app.enrichment.crossmatch import EnrichmentService
 from app.models.models import Object
 from sqlalchemy import select
@@ -24,6 +25,7 @@ from sqlalchemy import select
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+tns_service = TNSIngestionService()
 ingestion_service = AlerceIngestionService()
 enrichment_service = EnrichmentService()
 
@@ -35,14 +37,18 @@ async def run_ingestion_cycle():
 
     async with async_session() as session:
         try:
-            # Pull new alerts from ALeRCE
-            count = await ingestion_service.ingest_recent(
+            # PRIMARY SOURCE: Pull new discoveries from TNS daily CSV
+            tns_count = await tns_service.ingest_from_daily_csv(session)
+            logger.info(f"Ingested {tns_count} objects from TNS")
+
+            # ENRICHMENT: Pull light curves and classifications from ALeRCE
+            alerce_count = await ingestion_service.ingest_recent(
                 session,
                 lookback_days=settings.ingestion_lookback_days,
             )
-            logger.info(f"Ingested {count} objects from ALeRCE")
+            logger.info(f"Ingested {alerce_count} objects from ALeRCE")
 
-            # Enrich objects that don't have cross-match data yet
+            # ENRICHMENT: Cross-match with SIMBAD for catalog associations
             result = await session.execute(
                 select(Object)
                 .where(Object.cross_match_catalog.is_(None))

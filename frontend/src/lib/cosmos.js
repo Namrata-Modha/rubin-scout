@@ -94,11 +94,11 @@ export const CLASS_INFO = {
 export function getClassInfo(classification) {
   return (
     CLASS_INFO[classification] || {
-      name: classification || "Unknown",
-      emoji: "❓",
-      short: "Unclassified object",
-      description: "This object hasn't been classified yet, or its type isn't in our database.",
-      color: "#888",
+      name: classification || "New Transient",
+      emoji: "🔭",
+      short: "Awaiting classification",
+      description: "This transient was recently discovered and reported to the IAU Transient Name Server. It hasn't been spectroscopically classified yet, which means we don't know what type of event it is. Follow-up observations are needed.",
+      color: "#adb5bd",
     }
   );
 }
@@ -192,15 +192,19 @@ export function getAlertSummary(alert) {
   const info = getClassInfo(alert.classification);
   const constellation = getConstellation(alert.ra, alert.dec);
   const firstSeen = formatFirstSeen(alert.first_detection);
+  const source = alert.broker_source === "tns" ? "Reported to IAU" : "Detected";
 
+  if (!alert.classification) {
+    return `${info.emoji} New transient discovered in ${constellation}${firstSeen ? ` on ${firstSeen}` : ""}. Awaiting spectroscopic classification.`;
+  }
   if (alert.classification?.startsWith("SN")) {
-    return `${info.emoji} ${info.short} spotted in ${constellation}${firstSeen ? `, first detected ${firstSeen}` : ""}. Observed ${alert.n_detections} times.`;
+    return `${info.emoji} ${info.short} spotted in ${constellation}${firstSeen ? `, first detected ${firstSeen}` : ""}. ${source} with ${alert.n_detections} observation${alert.n_detections !== 1 ? "s" : ""}.`;
   }
   if (alert.classification === "TDE") {
-    return `${info.emoji} A star being torn apart by a black hole in ${constellation}. Observed ${alert.n_detections} times.`;
+    return `${info.emoji} A star being torn apart by a black hole in ${constellation}. ${source} with ${alert.n_detections} observation${alert.n_detections !== 1 ? "s" : ""}.`;
   }
   if (alert.classification === "AGN" || alert.classification === "Blazar") {
     return `${info.emoji} A supermassive black hole actively feeding in ${constellation}. Monitored ${alert.n_detections} times since ${firstSeen || "discovery"}.`;
   }
-  return `${info.emoji} ${info.short} detected in ${constellation}. ${alert.n_detections} observations.`;
+  return `${info.emoji} ${info.short} detected in ${constellation}. ${alert.n_detections} observation${alert.n_detections !== 1 ? "s" : ""}.`;
 }

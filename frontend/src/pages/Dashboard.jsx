@@ -128,20 +128,6 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* Classification filter */}
-        <select
-          value={selectedClass}
-          onChange={(e) => setSelectedClass(e.target.value)}
-          className="bg-white/[0.04] border border-white/[0.06] rounded-md px-3 py-1.5 text-xs font-mono text-white/70 appearance-none cursor-pointer"
-        >
-          <option value="">All classes</option>
-          {classifications.map((cls) => (
-            <option key={cls.name} value={cls.name}>
-              {cls.name} ({cls.count})
-            </option>
-          ))}
-        </select>
-
         {/* Probability slider */}
         <div className="flex items-center gap-2">
           <span className="text-xs text-white/30">Min conf:</span>
@@ -158,6 +144,37 @@ export default function Dashboard() {
             {(minProb * 100).toFixed(0)}%
           </span>
         </div>
+      </div>
+
+      {/* Quick category filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        {[
+          { label: "All", emoji: "🌌", value: "", color: "#748ffc" },
+          { label: "Supernova Ia", emoji: "💥", value: "SNIa", color: "#ff6b6b" },
+          { label: "Supernova II", emoji: "🌟", value: "SNII", color: "#ffa94d" },
+          { label: "Nucleus", emoji: "🌀", value: "AGN", color: "#74c0fc" },
+          { label: "Black Hole Event", emoji: "🕳️", value: "TDE", color: "#66d9e8" },
+          { label: "Kilonova", emoji: "🔔", value: "KN", color: "#ffd43b" },
+          { label: "Nova", emoji: "🔥", value: "CV/Nova", color: "#69db7c" },
+          { label: "Blazar", emoji: "🔦", value: "Blazar", color: "#748ffc" },
+        ].map((cat) => {
+          const isActive = selectedClass === cat.value;
+          return (
+            <button
+              key={cat.value}
+              onClick={() => setSelectedClass(cat.value)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-all border"
+              style={{
+                background: isActive ? cat.color + "25" : "rgba(255,255,255,0.025)",
+                borderColor: isActive ? cat.color + "50" : "rgba(255,255,255,0.06)",
+                color: isActive ? cat.color : "rgba(255,255,255,0.45)",
+              }}
+            >
+              <span className="text-sm">{cat.emoji}</span>
+              {cat.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Error state */}
@@ -245,7 +262,7 @@ export default function Dashboard() {
 
       {/* Footer */}
       <p className="text-[10px] text-white/20 text-center py-4">
-        Data from ALeRCE (alerce.science) and the Zwicky Transient Facility.
+        Discoveries from the IAU Transient Name Server (wis-tns.org). Classifications and light curves from ALeRCE (alerce.science) and the Zwicky Transient Facility.
         Rubin Scout is not affiliated with the Vera C. Rubin Observatory.
       </p>
     </div>

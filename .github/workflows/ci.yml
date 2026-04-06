@@ -50,8 +50,8 @@ jobs:
           pip install -r requirements.txt
       - name: Run tests
         env:
-          DATABASE_URL: postgresql+asyncpg://rubinscout:rubinscout@localhost:5432/rubinscout_test
-          DATABASE_URL_SYNC: postgresql://rubinscout:rubinscout@localhost:5432/rubinscout_test
+          DATABASE_URL: postgresql://rubinscout:rubinscout@localhost:5432/rubinscout_test
+          APP_ENV: test
         run: |
           cd backend
           python -m pytest tests/ -v

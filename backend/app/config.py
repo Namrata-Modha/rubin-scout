@@ -8,12 +8,22 @@ class Settings(BaseSettings):
     # Database — accepts a standard postgresql:// URL and auto-converts for async
     database_url: str = "postgresql://rubinscout:rubinscout@localhost:5432/rubinscout"
 
-    # ALeRCE
+    # ALeRCE (enrichment layer: light curves and ML classifications)
     alerce_api_url: str = "https://api.alerce.online"
     alerce_kafka_bootstrap: str = ""
     alerce_kafka_username: str = ""
     alerce_kafka_password: str = ""
     alerce_kafka_group_id: str = "rubin-scout-consumer"
+
+    # TNS (primary discovery feed: IAU Transient Name Server)
+    # ALL credentials come from environment variables. Never hardcode.
+    # User credentials (for CSV downloads, works after account approval):
+    tns_user_id: int = 0
+    tns_user_name: str = ""
+    # Bot credentials (for API searches, created inside TNS account):
+    tns_api_key: str = ""
+    tns_bot_id: int = 0
+    tns_bot_name: str = ""
 
     # Pitt-Google
     pittgoogle_project_id: str = "ardent-cycling-243415"
@@ -67,6 +77,16 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",")]
+
+    @property
+    def has_tns_user(self) -> bool:
+        """Check if TNS user credentials are configured."""
+        return self.tns_user_id > 0 and bool(self.tns_user_name)
+
+    @property
+    def has_tns_bot(self) -> bool:
+        """Check if TNS bot credentials are configured."""
+        return self.tns_bot_id > 0 and bool(self.tns_bot_name) and bool(self.tns_api_key)
 
     class Config:
         env_file = ".env"

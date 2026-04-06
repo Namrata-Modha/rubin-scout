@@ -8,7 +8,7 @@ It also does something no other downstream tool does: **gravitational wave cross
 
 ## What You Can Do
 
-**Browse cosmic events.** The dashboard shows real transient detections from the Zwicky Transient Facility and the Vera C. Rubin Observatory, classified by ALeRCE's machine learning pipeline. Each event is translated into human language with descriptions, constellation locations, and confidence scores.
+**Browse cosmic events.** The dashboard shows real transient discoveries from the IAU Transient Name Server, with ML classifications from ALeRCE and light curves from the Zwicky Transient Facility and Vera C. Rubin Observatory. Each event is translated into human language with descriptions, constellation locations, and confidence scores.
 
 **Explore gravitational wave events.** Six real LIGO/Virgo detections (GW170817, GW190521, and more) with descriptions of what happened, how far away it was, and a button to search for optical counterparts in the alert database.
 
@@ -24,7 +24,7 @@ It also does something no other downstream tool does: **gravitational wave cross
 | Database | PostgreSQL 17 (Supabase) with PostGIS |
 | Frontend | React 18, Vite, Recharts, Tailwind CSS |
 | Deployment | Vercel (frontend), Render (backend), Supabase (database) |
-| Data Sources | ALeRCE, LIGO/GraceDB, SIMBAD, GWTC catalogs |
+| Data Sources | TNS (IAU), ALeRCE, LIGO/GraceDB, SIMBAD, GWTC catalogs |
 
 ## Security
 
@@ -71,7 +71,7 @@ rubin-scout/
 ├── backend/                 Python FastAPI backend
 │   ├── app/
 │   │   ├── api/             Route handlers (alerts, GW, subscriptions)
-│   │   ├── ingestion/       ALeRCE data pulling and scheduling
+│   │   ├── ingestion/       TNS + ALeRCE data pulling and scheduling
 │   │   ├── enrichment/      SIMBAD cross-matching, GW cross-matching
 │   │   ├── models/          SQLAlchemy ORM models
 │   │   ├── notifications/   Slack, email, webhook delivery
@@ -93,7 +93,8 @@ rubin-scout/
 
 ## Data Sources and Attribution
 
-- [ALeRCE Broker](https://alerce.science) for ML-classified transient alerts. Cite: Forster et al. (2021), AJ, 161, 242
+- [IAU Transient Name Server](https://www.wis-tns.org) for real-time transient discoveries (primary source)
+- [ALeRCE Broker](https://alerce.science) for ML classifications and light curves. Cite: Forster et al. (2021), AJ, 161, 242
 - [Zwicky Transient Facility](https://www.ztf.caltech.edu) for optical survey data. Cite: Bellm et al. (2019), PASP, 131, 018002
 - [LIGO/Virgo/KAGRA](https://gwosc.org) for gravitational wave data. Cite per event as specified by LVK
 - [SIMBAD](https://simbad.u-strasbg.fr) for astronomical object cross-matching

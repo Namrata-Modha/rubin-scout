@@ -73,11 +73,19 @@ function AlertCard({ alert }) {
         <div className="flex items-center gap-3 text-[10px] text-white/25">
           <span>📍 {constellation}</span>
           <span>·</span>
-          <span>{alert.n_detections} observations</span>
+          <span>{alert.n_detections} observation{alert.n_detections !== 1 ? "s" : ""}</span>
           {alert.cross_match_name && (
             <>
               <span>·</span>
               <span>Near {alert.cross_match_name}</span>
+            </>
+          )}
+          {alert.broker_source && (
+            <>
+              <span>·</span>
+              <span className="uppercase tracking-wider" style={{ fontSize: "8px" }}>
+                {alert.broker_source === "tns" ? "IAU/TNS" : alert.broker_source}
+              </span>
             </>
           )}
         </div>
@@ -92,7 +100,7 @@ function AlertCard({ alert }) {
               rel="noopener"
               onClick={(e) => e.stopPropagation()}
               className="text-white/15 hover:text-white/40 transition-colors"
-              title="View raw data on ALeRCE"
+              title={alert.broker_source === "tns" ? "View on TNS" : "View raw data on ALeRCE"}
             >
               <ExternalLink className="w-3 h-3" />
             </a>

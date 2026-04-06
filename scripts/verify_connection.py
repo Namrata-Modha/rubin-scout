@@ -30,7 +30,7 @@ def main():
         sys.exit(1)
 
     # Step 2: Connect to ALeRCE
-    print("\n[2/4] Connecting to ALeRCE API...")
+    print("\n[2/5] Connecting to ALeRCE API...")
     try:
         client = Alerce()
         objects = client.query_objects(
@@ -46,8 +46,27 @@ def main():
         print(f"  ✗ ALeRCE connection failed: {e}")
         sys.exit(1)
 
-    # Step 3: Pull a light curve
-    print("\n[3/4] Pulling a light curve...")
+    # Step 3: Check TNS daily CSV access (no API key needed)
+    print("\n[3/5] Checking TNS daily CSV access...")
+    try:
+        import httpx
+        from datetime import datetime, timedelta, timezone
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y%m%d")
+        csv_url = f"https://www.wis-tns.org/system/files/tns_public_objects/tns_public_objects_{yesterday}.csv.zip"
+        resp = httpx.head(csv_url, follow_redirects=True, timeout=15)
+        if resp.status_code == 200:
+            size_mb = int(resp.headers.get("content-length", 0)) / 1024 / 1024
+            print(f"  ✓ TNS daily CSV available ({size_mb:.1f} MB for {yesterday})")
+        elif resp.status_code == 404:
+            print(f"  ⚠ TNS CSV for {yesterday} not yet generated (check after midnight UTC)")
+        else:
+            print(f"  ⚠ TNS returned status {resp.status_code}")
+    except Exception as e:
+        print(f"  ⚠ TNS check failed (non-critical): {e}")
+
+    # Step 4: Pull a light curve
+    print("\n[4/5] Pulling a light curve...")
     try:
         if n_objects > 0:
             test_oid = objects.iloc[0]["oid"]
@@ -65,8 +84,8 @@ def main():
     except Exception as e:
         print(f"  ✗ Light curve fetch failed: {e}")
 
-    # Step 4: Test astroquery (SIMBAD)
-    print("\n[4/4] Testing SIMBAD cross-match...")
+    # Step 5: Test astroquery (SIMBAD)
+    print("\n[5/5] Testing SIMBAD cross-match...")
     try:
         from astropy.coordinates import SkyCoord
         import astropy.units as u

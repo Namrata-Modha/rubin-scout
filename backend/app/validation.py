@@ -35,7 +35,14 @@ VALID_NOTIFICATION_METHODS = {"email", "slack", "webhook"}
 # ---------------------------------------------------------------------------
 
 # ZTF object IDs: "ZTF" followed by 2 digits (year) then alphanumeric
-OID_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
+OID_ZTF_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
+
+# TNS object IDs: prefix (AT, SN, etc.) followed by year and letter sequence
+# Examples: AT2026frd, SN2026bgd, AT2024ryv
+OID_TNS_PATTERN = re.compile(r"^(AT|SN|FRB)\d{4}[a-z]{1,8}$")
+
+# Combined: accept either format
+OID_PATTERN = re.compile(r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|FRB)\d{4}[a-z]{1,8})$")
 
 # GW superevent IDs: "GW" or "S" followed by digits and optional letter
 GW_EVENT_PATTERN = re.compile(r"^(GW|S)\d{6}[a-z]?$")
@@ -54,13 +61,13 @@ WEBHOOK_URL_PATTERN = re.compile(r"^https?://[a-zA-Z0-9.\-]+(:[0-9]+)?(/[^\s]*)?
 def validate_oid(oid: str) -> str:
     """
     Validate and sanitize an astronomical object ID.
-    Must match ZTF naming convention.
+    Accepts ZTF format (ZTF21aaaaaaa) or TNS format (AT2026frd, SN2026bgd).
     """
     oid = oid.strip()
     if len(oid) > 30:
         raise ValueError("Object ID too long (max 30 characters)")
     if not OID_PATTERN.match(oid):
-        raise ValueError(f"Invalid object ID format: {oid}. Expected ZTFYYxxxxxxx pattern.")
+        raise ValueError(f"Invalid object ID format: {oid}. Expected ZTFYYxxxxxxx or ATYYYYxxx / SNYYYYxxx.")
     return oid
 
 

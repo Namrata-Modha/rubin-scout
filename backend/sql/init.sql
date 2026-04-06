@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS objects (
     cross_match_distance_arcsec REAL,
     host_galaxy_name TEXT,
     host_galaxy_redshift REAL,
-    broker_source TEXT DEFAULT 'alerce',
+    broker_source TEXT DEFAULT 'tns',
     alert_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
