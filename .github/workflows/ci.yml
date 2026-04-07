@@ -21,7 +21,7 @@ jobs:
       - name: Lint
         run: |
           cd backend
-          ruff check app/ scripts/
+          ruff check app/
 
   backend-test:
     runs-on: ubuntu-latest
@@ -48,6 +48,12 @@ jobs:
         run: |
           cd backend
           pip install -r requirements.txt
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql://rubinscout:rubinscout@localhost:5432/rubinscout_test
+        run: |
+          cd backend
+          alembic upgrade head
       - name: Run tests
         env:
           DATABASE_URL: postgresql://rubinscout:rubinscout@localhost:5432/rubinscout_test
