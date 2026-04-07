@@ -6,7 +6,7 @@ Security:
 - Rate limited: 5/minute (ingestion is heavy)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -61,7 +61,7 @@ async def backfill_tns_photometry(
     """
     service = TNSIngestionService()
     count = await service.backfill_photometry(db)
-    
+
     return {
         "status": "completed",
         "objects_processed": count,

@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.models import Object, Detection, ClassificationProbability, IngestionLog
+from app.models.models import ClassificationProbability, Detection, IngestionLog, Object
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

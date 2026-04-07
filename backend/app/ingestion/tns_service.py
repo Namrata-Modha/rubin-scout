@@ -10,17 +10,15 @@ import io
 import json
 import logging
 import zipfile
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from astropy.time import Time
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.models import Object, Detection, IngestionLog
+from app.models.models import Detection, IngestionLog, Object
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -361,7 +359,7 @@ class TNSIngestionService:
     async def _fetch_and_store_photometry(self, session, objname, oid):
         """
         Fetch photometry for an object and store it in detections table.
-        
+
         Args:
             session: Database session
             objname: TNS object name (without prefix, e.g. "2026huy")
@@ -371,33 +369,33 @@ class TNSIngestionService:
         if not detail:
             logger.warning(f"Could not fetch photometry for {objname}")
             return 0
-        
+
         photometry = detail.get("photometry", [])
         if not photometry:
             logger.info(f"No photometry data available for {objname}")
             return 0
-        
+
         # Check existing detections to avoid duplicates
         # Use detection_time instead of obs_date
         existing = await session.execute(
             select(Detection.detection_time).where(Detection.oid == oid)
         )
         existing_times = {row[0] for row in existing.fetchall()}
-        
+
         count = 0
         for phot in photometry:
             obs_date_str = phot.get("obsdate", "")
             obs_date = _parse_tns_date(obs_date_str)
             if not obs_date or obs_date in existing_times:
                 continue
-            
+
             # TNS photometry fields
             mag = phot.get("magnitude")
             mag_err = phot.get("e_magnitude")
             filter_value = phot.get("filters")
             filter_name = filter_value.get("name", "") if isinstance(filter_value, dict) else ""
             band = TNS_FILTER_MAP.get(filter_name, filter_name) if filter_name else None
-            
+
             # Convert magnitude to float
             magnitude = None
             magnitude_err = None
@@ -408,16 +406,16 @@ class TNSIngestionService:
                         magnitude_err = float(mag_err)
                 except (ValueError, TypeError):
                     pass
-            
+
             # Skip if we don't have magnitude data
             if magnitude is None:
                 continue
-            
+
             # Convert to MJD
             mjd = _datetime_to_mjd(obs_date)
             if mjd is None:
                 continue
-            
+
             detection = Detection(
                 oid=oid,
                 mjd=mjd,
@@ -430,11 +428,11 @@ class TNSIngestionService:
             )
             session.add(detection)
             count += 1
-        
+
         if count > 0:
             await session.flush()
             logger.info(f"Stored {count} photometry points for {objname}")
-        
+
         return count
 
     async def _upsert_from_api(self, session, detail, prefix):
@@ -483,17 +481,17 @@ class TNSIngestionService:
         if not self._get_headers():
             logger.error("Cannot seed TNS: set TNS_USER_ID + TNS_USER_NAME in .env")
             return 0
-        
+
         total = 0
         today = datetime.now(timezone.utc)
-        
+
         # Step 1: Seed objects from CSV
         for d in range(1, days + 1):
             date = today - timedelta(days=d)
             count = await self.ingest_from_daily_csv(session, date)
             total += count
             logger.info(f"Day {date.strftime('%Y-%m-%d')}: {count} objects")
-        
+
         # Step 2: Fetch photometry for all objects that don't have it
         if settings.has_tns_bot:
             logger.info("Fetching photometry for TNS objects...")
@@ -501,25 +499,25 @@ class TNSIngestionService:
             logger.info(f"Fetched photometry for {phot_count} objects")
         else:
             logger.warning("No bot credentials - skipping photometry fetch. Set TNS_BOT_ID, TNS_BOT_NAME, TNS_API_KEY")
-        
+
         logger.info(f"TNS seed complete: {total} objects from last {days} days")
         return total
-    
+
     async def backfill_photometry(self, session, limit=None):
         """
         Backfill photometry for existing TNS objects that have no detections.
-        
+
         Args:
             session: Database session
             limit: Maximum number of objects to process (None for all)
-        
+
         Returns:
             Number of objects for which photometry was fetched
         """
         if not settings.has_tns_bot:
             logger.error("Backfill requires bot credentials. Set TNS_BOT_ID, TNS_BOT_NAME, TNS_API_KEY")
             return 0
-        
+
         # Find all TNS objects with no detections
         query = text("""
             SELECT o.oid, o.alert_url
@@ -528,16 +526,16 @@ class TNSIngestionService:
             WHERE o.broker_source = 'tns'
             AND d.oid IS NULL
         """)
-        
+
         if limit:
             query = text(f"{str(query).rstrip()} LIMIT :limit")
             result = await session.execute(query, {"limit": limit})
         else:
             result = await session.execute(query)
-        
+
         objects = result.fetchall()
         logger.info(f"Found {len(objects)} TNS objects without photometry")
-        
+
         count = 0
         for oid, alert_url in objects:
             # Extract objname from alert URL
@@ -546,7 +544,7 @@ class TNSIngestionService:
             if not objname:
                 # Try to extract from oid (e.g., "SN2026huy" -> "2026huy")
                 objname = oid.replace("SN", "").replace("AT", "")
-            
+
             logger.info(f"Fetching photometry for {oid} (objname: {objname})")
             phot_count = await self._fetch_and_store_photometry(session, objname, oid)
             if phot_count > 0:
@@ -554,11 +552,11 @@ class TNSIngestionService:
                 logger.info(f"✓ {oid}: {phot_count} detections")
             else:
                 logger.info(f"✗ {oid}: No photometry available")
-            
+
             # Commit every 10 objects to avoid huge transactions
             if count % 10 == 0 and count > 0:
                 await session.commit()
-        
+
         await session.commit()
         logger.info(f"Backfill complete: fetched photometry for {count}/{len(objects)} objects")
         return count

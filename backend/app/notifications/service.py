@@ -5,13 +5,11 @@ Sends alerts through Slack webhooks, email, or generic webhooks
 when new transients match a subscription's filter criteria.
 """
 
-import json
 import logging
 import smtplib
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional
+from email.mime.text import MIMEText
 
 import httpx
 from sqlalchemy import select, update
@@ -36,7 +34,7 @@ class NotificationService:
             return
 
         result = await session.execute(
-            select(Subscription).where(Subscription.active == True)
+            select(Subscription).where(Subscription.active)
         )
         subscriptions = result.scalars().all()
 
@@ -68,7 +66,6 @@ class NotificationService:
 
         classes = filter_config.get("classification")
         min_prob = filter_config.get("min_probability", 0)
-        max_mag = filter_config.get("max_magnitude")
         exclude_known = filter_config.get("exclude_known_variables", False)
 
         for obj in objects:
@@ -180,7 +177,7 @@ class NotificationService:
                 f"https://alerce.online/object/{obj.oid}"
             )
 
-        lines.append(f"\nView all alerts on your Rubin Scout dashboard.")
+        lines.append("\nView all alerts on your Rubin Scout dashboard.")
         text_body = "\n".join(lines)
         msg.attach(MIMEText(text_body, "plain"))
 

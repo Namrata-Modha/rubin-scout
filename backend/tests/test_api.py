@@ -5,7 +5,8 @@ Run with: cd backend && python -m pytest tests/ -v
 """
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
+
 from app.main import app
 
 
@@ -83,8 +84,8 @@ class TestMJDConversion:
     """Test astronomical time conversions."""
 
     def test_mjd_to_datetime(self):
+
         from app.ingestion.alerce_service import mjd_to_datetime
-        from datetime import datetime, timezone
 
         # MJD 51544.0 = January 1, 2000 00:00 UTC (J2000.0 epoch)
         dt = mjd_to_datetime(51544.0)

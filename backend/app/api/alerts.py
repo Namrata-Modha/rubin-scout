@@ -12,16 +12,14 @@ Security:
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Request
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from sqlalchemy import select, func, text, desc
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.models import Object, Detection, ClassificationProbability
+from app.models.models import ClassificationProbability, Detection, Object
 from app.security import limiter
-from app.validation import validate_oid, validate_classification
+from app.validation import validate_classification, validate_oid
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 

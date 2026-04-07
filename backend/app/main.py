@@ -15,20 +15,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.config import get_settings
-from app.security import (
-    limiter,
-    rate_limit_exceeded_handler,
-    SecurityHeadersMiddleware,
-    RequestSizeLimitMiddleware,
-)
 from app.api.alerts import router as alerts_router
-from app.api.subscriptions import router as subscriptions_router
 from app.api.gw import router as gw_router
 from app.api.ingest import router as ingest_router
+from app.api.subscriptions import router as subscriptions_router
+from app.config import get_settings
+from app.security import (
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    limiter,
+    rate_limit_exceeded_handler,
+)
 
 settings = get_settings()
 

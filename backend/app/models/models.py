@@ -1,9 +1,18 @@
 """SQLAlchemy ORM models for Rubin Scout."""
 
 from datetime import datetime
+
 from sqlalchemy import (
-    Column, String, Float, Integer, BigInteger, Boolean, Text,
-    DateTime, ForeignKey, UniqueConstraint, Index
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship

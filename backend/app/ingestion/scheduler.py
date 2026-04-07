@@ -13,14 +13,14 @@ import logging
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session
+from app.enrichment.crossmatch import EnrichmentService
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.tns_service import TNSIngestionService
-from app.enrichment.crossmatch import EnrichmentService
 from app.models.models import Object
-from sqlalchemy import select
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

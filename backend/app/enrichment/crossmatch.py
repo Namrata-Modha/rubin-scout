@@ -9,8 +9,8 @@ Has it already been reported by another group?
 import logging
 from typing import Optional
 
-from astropy.coordinates import SkyCoord
 import astropy.units as u
+from astropy.coordinates import SkyCoord
 from astroquery.simbad import Simbad
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession

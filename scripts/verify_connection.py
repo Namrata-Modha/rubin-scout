@@ -21,7 +21,7 @@ def main():
         from alerce.core import Alerce
         import astropy
         import pandas as pd
-        print(f"  ✓ alerce client loaded")
+        print("  ✓ alerce client loaded")
         print(f"  ✓ astropy {astropy.__version__}")
         print(f"  ✓ pandas {pd.__version__}")
     except ImportError as e:

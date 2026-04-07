@@ -14,18 +14,12 @@ falls back to angular distance matching.
 
 import logging
 import math
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
 
-import httpx
-import numpy as np
-from astropy.coordinates import SkyCoord
-import astropy.units as u
-from astropy.io import fits
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Object, GWEvent, GWCandidate
+from app.models.models import GWCandidate, GWEvent, Object
 
 logger = logging.getLogger(__name__)
 

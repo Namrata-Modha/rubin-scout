@@ -11,8 +11,8 @@ Follows OWASP input validation guidelines:
 
 import re
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
-from enum import Enum
+
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Allowlists

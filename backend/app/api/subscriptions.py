@@ -11,7 +11,7 @@ Security:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select, update, delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -63,7 +63,7 @@ async def create_subscription(
     existing_count = await db.execute(
         select(Subscription)
         .where(Subscription.user_email == payload.user_email)
-        .where(Subscription.active == True)
+        .where(Subscription.active)
     )
     if len(existing_count.scalars().all()) >= 10:
         raise HTTPException(
