@@ -1,11 +1,11 @@
 """
 Ingestion Scheduler.
 
-Runs periodic pulls from ALeRCE to keep the local database up to date.
-This is the MVP approach; the Kafka consumer (Week 5) will replace this
-for real-time ingestion.
+Runs periodic pulls from TNS (primary) and ALeRCE (enrichment) to keep 
+the local database up to date. Runs as a background task within the FastAPI app.
 
-Run with: python -m app.ingestion.scheduler
+TNS: Primary discovery feed (new transients)
+ALeRCE: Enrichment layer (light curves, ML classifications)
 """
 
 import asyncio
@@ -26,29 +26,36 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 tns_service = TNSIngestionService()
-ingestion_service = AlerceIngestionService()
+alerce_service = AlerceIngestionService()
 enrichment_service = EnrichmentService()
+
+# Global scheduler instance
+_scheduler = None
 
 
 async def run_ingestion_cycle():
     """Execute one full ingestion + enrichment cycle."""
+    logger.info("=" * 60)
     logger.info("Starting ingestion cycle")
     start = datetime.now(timezone.utc)
 
     async with async_session() as session:
         try:
-            # PRIMARY SOURCE: Pull new discoveries from TNS daily CSV
+            # PRIMARY SOURCE: Pull new discoveries from TNS
+            logger.info("Fetching new objects from TNS...")
             tns_count = await tns_service.ingest_from_daily_csv(session)
-            logger.info(f"Ingested {tns_count} objects from TNS")
+            logger.info(f"✓ Ingested {tns_count} objects from TNS")
 
             # ENRICHMENT: Pull light curves and classifications from ALeRCE
-            alerce_count = await ingestion_service.ingest_recent(
+            logger.info("Enriching with ALeRCE data...")
+            alerce_count = await alerce_service.ingest_recent(
                 session,
                 lookback_days=settings.ingestion_lookback_days,
             )
-            logger.info(f"Ingested {alerce_count} objects from ALeRCE")
+            logger.info(f"✓ Enriched {alerce_count} objects with ALeRCE data")
 
             # ENRICHMENT: Cross-match with SIMBAD for catalog associations
+            logger.info("Cross-matching with SIMBAD...")
             result = await session.execute(
                 select(Object)
                 .where(Object.cross_match_catalog.is_(None))
@@ -59,17 +66,75 @@ async def run_ingestion_cycle():
 
             if unenriched:
                 enriched = await enrichment_service.enrich_batch(session, unenriched)
-                logger.info(f"Enriched {enriched} objects with SIMBAD data")
+                logger.info(f"✓ Enriched {enriched} objects with SIMBAD data")
+            else:
+                logger.info("✓ No unenriched objects found")
 
         except Exception as e:
-            logger.error(f"Ingestion cycle failed: {e}", exc_info=True)
+            logger.error(f"✗ Ingestion cycle failed: {e}", exc_info=True)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(f"Ingestion cycle completed in {elapsed:.1f}s")
+    logger.info("=" * 60)
+
+
+def start_background_scheduler():
+    """
+    Start the background ingestion scheduler.
+    Called from FastAPI app startup.
+    """
+    global _scheduler
+    
+    if _scheduler is not None:
+        logger.warning("Scheduler already running, skipping start")
+        return _scheduler
+    
+    _scheduler = AsyncIOScheduler()
+    
+    # Run ingestion cycle at configured interval
+    _scheduler.add_job(
+        run_ingestion_cycle,
+        "interval",
+        seconds=settings.ingestion_interval_seconds,
+        next_run_time=datetime.now(timezone.utc),  # Run immediately on start
+        id="ingestion_cycle",
+        name="TNS + ALeRCE Ingestion",
+        replace_existing=True,
+    )
+
+    _scheduler.start()
+    
+    logger.info("=" * 60)
+    logger.info("Background ingestion scheduler started")
+    logger.info(f"Interval: {settings.ingestion_interval_seconds}s ({settings.ingestion_interval_seconds / 60:.1f} minutes)")
+    logger.info("Jobs scheduled:")
+    logger.info("  - TNS ingestion (primary discovery)")
+    logger.info("  - ALeRCE enrichment (light curves + ML)")
+    logger.info("  - SIMBAD cross-matching")
+    logger.info("=" * 60)
+    
+    return _scheduler
+
+
+def stop_background_scheduler():
+    """
+    Stop the background scheduler.
+    Called from FastAPI app shutdown.
+    """
+    global _scheduler
+    
+    if _scheduler is not None:
+        logger.info("Stopping background scheduler...")
+        _scheduler.shutdown()
+        _scheduler = None
+        logger.info("✓ Scheduler stopped")
 
 
 def main():
-    """Start the scheduler."""
+    """
+    Standalone scheduler runner (for testing).
+    In production, use start_background_scheduler() from FastAPI app.
+    """
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
         format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
@@ -80,10 +145,12 @@ def main():
         run_ingestion_cycle,
         "interval",
         seconds=settings.ingestion_interval_seconds,
-        next_run_time=datetime.now(timezone.utc),  # Run immediately on start
+        next_run_time=datetime.now(timezone.utc),
+        id="ingestion_cycle",
+        name="TNS + ALeRCE Ingestion",
     )
 
-    logger.info(f"Ingestion scheduler starting (interval: {settings.ingestion_interval_seconds}s)")
+    logger.info(f"Standalone scheduler starting (interval: {settings.ingestion_interval_seconds}s)")
     scheduler.start()
 
     try:
