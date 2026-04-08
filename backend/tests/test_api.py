@@ -76,7 +76,7 @@ async def test_alert_detail_not_found():
     """Requesting a nonexistent object returns 404 or 500 (no DB)."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/alerts/FAKE_OBJECT_123")
+        response = await client.get("/api/alerts/ZTF99zzzzzzz")  # Valid format, doesn't exist
     assert response.status_code in (404, 500)
 
 
