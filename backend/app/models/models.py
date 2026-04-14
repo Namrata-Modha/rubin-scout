@@ -114,7 +114,6 @@ class ClassificationProbability(Base):
     classifier_version = Column(String)
     class_name = Column(String, nullable=False)
     probability = Column(Float, nullable=False)
-    ranking = Column(Integer)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     object = relationship("Object", back_populates="probabilities")
