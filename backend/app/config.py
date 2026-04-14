@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     # Ingestion
     ingestion_interval_seconds: int = 900
-    ingestion_lookback_days: int = 1
+    ingestion_lookback_days: int = 30
     min_classification_probability: float = 0.5
 
     # Notifications
