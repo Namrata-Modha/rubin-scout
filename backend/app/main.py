@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api import alerts, gw, ingest, subscriptions
+from app.api.images import router as images_router
 from app.config import get_settings
 from app.ingestion.scheduler import start_background_scheduler, stop_background_scheduler
 from app.security import (
@@ -72,7 +73,7 @@ app.include_router(alerts.router)
 app.include_router(gw.router)
 app.include_router(ingest.router)
 app.include_router(subscriptions.router)
-
+app.include_router(images_router)
 
 @app.get("/")
 async def root():

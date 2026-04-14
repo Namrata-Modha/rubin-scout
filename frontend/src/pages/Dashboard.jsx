@@ -40,13 +40,13 @@ export default function Dashboard() {
     try {
       const offset = (page - 1) * PER_PAGE;
       const [alertsRes, statsRes, classRes] = await Promise.all([
-        getRecentAlerts({
-          classification: selectedClass || null,
-          minProbability: minProb,
-          hours,
-          limit: PER_PAGE,
-          offset,
-        }),
+      getRecentAlerts({
+        ...(selectedClass && { classification: selectedClass }),  // Only include if not empty
+        minProbability: minProb,
+        hours,
+        limit: PER_PAGE,
+        offset,
+      }),
         getSummaryStats(hours),
         getClassifications(),
       ]);

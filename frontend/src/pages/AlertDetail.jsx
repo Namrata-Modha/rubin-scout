@@ -11,6 +11,12 @@ import {
   formatFirstSeen,
 } from "../lib/cosmos";
 
+// Helper function to generate Legacy Survey cutout URLs
+const getCutoutUrl = (ra, dec, size = 400) => {
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  return `${apiUrl}/api/images/cutout?ra=${ra}&dec=${dec}&size=${size}&pixscale=0.5`;
+};
+
 export default function AlertDetail() {
   const { oid } = useParams();
   const [data, setData] = useState(null);
@@ -113,6 +119,35 @@ export default function AlertDetail() {
         </div>
       </div>
 
+      {/* TELESCOPE IMAGE - NEW SECTION */}
+      <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-6">
+        <h2 className="text-sm font-medium text-white/50 mb-3">
+          Telescope Image
+        </h2>
+        <div className="relative">
+          <img
+            src={getCutoutUrl(obj.ra, obj.dec, 400)}
+            alt={`Sky region for ${obj.oid}`}
+            className="w-full max-w-md rounded-lg border-2 border-white/[0.08] shadow-lg mx-auto"
+            loading="eager"
+            onError={(e) => {
+              e.target.style.display = 'none';
+              const fallback = e.target.nextElementSibling;
+              if (fallback) fallback.style.display = 'block';
+            }}
+          />
+          <div style={{display: 'none'}} className="text-white/30 text-sm text-center py-8">
+            <p>Telescope image unavailable for this region</p>
+            <p className="text-xs text-white/20 mt-1">
+              This area may be outside Legacy Survey coverage
+            </p>
+          </div>
+        </div>
+        <p className="text-xs text-white/25 mt-3 text-center">
+          Real telescope image from the Legacy Survey (RA {obj.ra?.toFixed(2)}°, Dec {obj.dec?.toFixed(2)}°)
+        </p>
+      </div>
+      
       {/* Quick facts */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <FactCard

@@ -50,7 +50,7 @@ function drawBackground(ctx, w, h) {
     if (!isInside(x, y, w, h)) continue;
     const b = rand();
     const size = b < 0.92 ? 0.3 : b < 0.98 ? 0.6 : 1.0;
-    const alpha = 0.05 + b * 0.4;
+    const alpha = 0.15 + b * 0.5;  // Brighter stars
     // Slight color variation: blue-white, warm-white, cool-blue
     const temp = rand();
     const r = temp < 0.3 ? 180 : temp < 0.6 ? 210 : 200;
@@ -67,58 +67,11 @@ function drawBackground(ctx, w, h) {
     const x = rand() * w, y = rand() * h;
     if (!isInside(x, y, w, h)) continue;
     const g = ctx.createRadialGradient(x, y, 0, x, y, 4 + rand() * 3);
-    g.addColorStop(0, `rgba(200,220,255,${0.3 + rand()*0.3})`);
+    g.addColorStop(0, `rgba(200,220,255,${0.5 + rand()*0.4})`);  // More visible glow
     g.addColorStop(0.3, "rgba(180,200,255,0.08)");
     g.addColorStop(1, "transparent");
     ctx.fillStyle = g;
     ctx.fillRect(x - 8, y - 8, 16, 16);
-  }
-}
-
-function drawMilkyWay(ctx, w, h) {
-  // Wide, diffuse galactic band — multiple offset passes for natural width
-  const offsets = [-20, -12, -6, 0, 6, 12, 20];
-  const alphas = [0.008, 0.012, 0.018, 0.025, 0.018, 0.012, 0.008];
-
-  for (let pass = 0; pass < offsets.length; pass++) {
-    for (let ra = 0; ra <= 360; ra += 0.6) {
-      // Galactic plane in equatorial coordinates (sinusoidal approximation)
-      const baseDec = 28 * Math.sin((ra - 280) * (Math.PI / 180));
-      const dec = baseDec + offsets[pass];
-      const { x, y } = mollweideProject(ra, dec, w, h);
-      if (!isInside(x, y, w, h)) continue;
-
-      const r = 25 + Math.abs(offsets[pass]) * 1.5;
-      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `rgba(160, 140, 200, ${alphas[pass]})`);
-      g.addColorStop(0.5, `rgba(130, 110, 180, ${alphas[pass] * 0.4})`);
-      g.addColorStop(1, "transparent");
-      ctx.fillStyle = g;
-      ctx.fillRect(x - r, y - r, r * 2, r * 2);
-    }
-  }
-
-  // Galactic center — brighter, warmer glow
-  const gc = mollweideProject(266, -29, w, h);
-  if (isInside(gc.x, gc.y, w, h)) {
-    for (const [radius, alpha] of [[100, 0.04], [60, 0.05], [30, 0.06]]) {
-      const g = ctx.createRadialGradient(gc.x, gc.y, 0, gc.x, gc.y, radius);
-      g.addColorStop(0, `rgba(200, 170, 230, ${alpha})`);
-      g.addColorStop(0.5, `rgba(160, 130, 200, ${alpha * 0.3})`);
-      g.addColorStop(1, "transparent");
-      ctx.fillStyle = g;
-      ctx.fillRect(gc.x - radius, gc.y - radius, radius * 2, radius * 2);
-    }
-  }
-
-  // Anti-center region (RA ~76) — dimmer section
-  const ac = mollweideProject(76, 24, w, h);
-  if (isInside(ac.x, ac.y, w, h)) {
-    const g = ctx.createRadialGradient(ac.x, ac.y, 0, ac.x, ac.y, 50);
-    g.addColorStop(0, "rgba(140, 120, 180, 0.03)");
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g;
-    ctx.fillRect(ac.x - 50, ac.y - 50, 100, 100);
   }
 }
 
@@ -146,7 +99,7 @@ function drawNebulae(ctx, w, h) {
 }
 
 function drawGrid(ctx, w, h) {
-  ctx.strokeStyle = "rgba(80, 120, 200, 0.055)";
+  ctx.strokeStyle = "rgba(80, 120, 200, 0.12)";  // More visible grid
   ctx.lineWidth = 0.5;
   for (let lon = -180; lon <= 180; lon += 30) {
     ctx.beginPath();
@@ -166,7 +119,7 @@ function drawGrid(ctx, w, h) {
     ctx.stroke();
   }
   // Boundary
-  ctx.strokeStyle = "rgba(80, 130, 220, 0.15)";
+  ctx.strokeStyle = "rgba(80, 130, 220, 0.25)";  // Brighter boundary
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let lat = -90; lat <= 90; lat += 0.5) {
@@ -192,34 +145,52 @@ function drawAlerts(ctx, alerts, w, h, selectedOid, time) {
     const phase = (time * 0.0012 + a.ra * 0.08) % (Math.PI * 2);
     const ps = 16 + Math.sin(phase) * 5;
 
-    // Outer pulse
+    // Outer pulse (more visible)
     const og = ctx.createRadialGradient(x, y, 0, x, y, ps);
-    og.addColorStop(0, color + "28");
-    og.addColorStop(0.4, color + "0c");
+    og.addColorStop(0, color + "40");  // Increased from 28
+    og.addColorStop(0.4, color + "18");  // Increased from 0c
     og.addColorStop(1, "transparent");
     ctx.fillStyle = og;
     ctx.fillRect(x - ps, y - ps, ps * 2, ps * 2);
 
-    // Inner glow
-    const ig = ctx.createRadialGradient(x, y, 0, x, y, 6);
-    ig.addColorStop(0, color + "aa");
-    ig.addColorStop(0.5, color + "30");
+    // Inner glow (brighter)
+    const ig = ctx.createRadialGradient(x, y, 0, x, y, 8);
+    ig.addColorStop(0, color + "dd");  // Increased from aa
+    ig.addColorStop(0.5, color + "50");  // Increased from 30
     ig.addColorStop(1, "transparent");
     ctx.fillStyle = ig;
-    ctx.fillRect(x - 6, y - 6, 12, 12);
+    ctx.fillRect(x - 8, y - 8, 16, 16);
 
-    // Core
-    ctx.beginPath();
-    ctx.arc(x, y, sel ? 3.5 : 2.2, 0, Math.PI * 2);
-    ctx.fillStyle = sel ? "#fff" : color;
-    ctx.fill();
+    // Draw emoji instead of dot
+    ctx.font = sel ? "16px Arial" : "12px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    
+    // Add subtle shadow for visibility
+    ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    
+    ctx.fillText(info.emoji, x, y);
+    
+    // Reset shadow
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
 
     if (sel) {
-      ctx.strokeStyle = color + "80";
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
-      ctx.strokeStyle = color + "25";
-      ctx.beginPath(); ctx.arc(x, y, 17, 0, Math.PI * 2); ctx.stroke();
+      // Selection rings
+      ctx.strokeStyle = color + "cc";  // Brighter
+      ctx.lineWidth = 2;
+      ctx.beginPath(); 
+      ctx.arc(x, y, 12, 0, Math.PI * 2); 
+      ctx.stroke();
+      
+      ctx.strokeStyle = color + "40";  // More visible
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); 
+      ctx.arc(x, y, 18, 0, Math.PI * 2); 
+      ctx.stroke();
     }
   }
 }
@@ -249,7 +220,6 @@ export default function SkyMap({ alerts, selectedOid, onSelectAlert }) {
       const oc = off.getContext("2d");
       oc.scale(dpr, dpr);
       drawBackground(oc, w, h);
-      drawMilkyWay(oc, w, h);
       drawNebulae(oc, w, h);
       drawGrid(oc, w, h);
       bgRef.current = { canvas: off, w };
