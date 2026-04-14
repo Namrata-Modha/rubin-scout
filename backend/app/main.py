@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.api import alerts, gw, ingest, subscriptions
@@ -32,13 +31,13 @@ logging.basicConfig(
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     logger.info("Starting Rubin Scout backend...")
-    
+
     # Start background ingestion scheduler
     if settings.app_env != "test":
         start_background_scheduler()
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Rubin Scout backend...")
     if settings.app_env != "test":

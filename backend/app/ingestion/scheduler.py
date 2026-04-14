@@ -1,7 +1,7 @@
 """
 Ingestion Scheduler.
 
-Runs periodic pulls from TNS (primary) and ALeRCE (enrichment) to keep 
+Runs periodic pulls from TNS (primary) and ALeRCE (enrichment) to keep
 the local database up to date. Runs as a background task within the FastAPI app.
 
 TNS: Primary discovery feed (new transients)
@@ -84,13 +84,13 @@ def start_background_scheduler():
     Called from FastAPI app startup.
     """
     global _scheduler
-    
+
     if _scheduler is not None:
         logger.warning("Scheduler already running, skipping start")
         return _scheduler
-    
+
     _scheduler = AsyncIOScheduler()
-    
+
     # Run ingestion cycle at configured interval
     _scheduler.add_job(
         run_ingestion_cycle,
@@ -103,7 +103,7 @@ def start_background_scheduler():
     )
 
     _scheduler.start()
-    
+
     logger.info("=" * 60)
     logger.info("Background ingestion scheduler started")
     logger.info(f"Interval: {settings.ingestion_interval_seconds}s ({settings.ingestion_interval_seconds / 60:.1f} minutes)")
@@ -112,7 +112,7 @@ def start_background_scheduler():
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
     logger.info("=" * 60)
-    
+
     return _scheduler
 
 
@@ -122,7 +122,7 @@ def stop_background_scheduler():
     Called from FastAPI app shutdown.
     """
     global _scheduler
-    
+
     if _scheduler is not None:
         logger.info("Stopping background scheduler...")
         _scheduler.shutdown()
