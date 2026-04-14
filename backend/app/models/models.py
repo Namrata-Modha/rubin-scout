@@ -87,7 +87,6 @@ class Detection(Base):
     ra = Column(Float)
     dec = Column(Float)
     isdiffpos = Column(String)
-    rb = Column(Float)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     object = relationship("Object", back_populates="detections")
