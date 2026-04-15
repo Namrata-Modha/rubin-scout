@@ -128,22 +128,30 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* Probability slider */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-white/30">Min conf:</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.1"
-            value={minProb}
-            onChange={(e) => setMinProb(parseFloat(e.target.value))}
-            className="w-20 accent-cosmos-500"
-          />
-          <span className="text-xs font-mono text-white/50 w-8">
-            {(minProb * 100).toFixed(0)}%
+      {/* Probability slider */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-white/30 flex items-center gap-1">
+          Min conf:
+          <span 
+            className="cursor-help text-white/20 hover:text-white/50 transition-colors" 
+            title="How confident we are about the object type (from spectroscopy or ML). Higher = more certain."
+          >
+            ⓘ
           </span>
-        </div>
+        </span>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.1"
+          value={minProb}
+          onChange={(e) => setMinProb(parseFloat(e.target.value))}
+          className="w-20 accent-cosmos-500"
+        />
+        <span className="text-xs font-mono text-white/50 w-8">
+          {(minProb * 100).toFixed(0)}%
+        </span>
+      </div>
       </div>
 
       {/* Quick category filters */}
