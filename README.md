@@ -2,13 +2,13 @@
 
 **The cosmos for curious humans.**
 
-Rubin Scout makes real astronomical discoveries accessible. It pulls live data from telescope alert systems, translates the raw science into plain language, and lets you explore exploding stars, feeding black holes, and neutron star collisions through an interactive dashboard.
+Rubin Scout makes real astronomical discoveries accessible. It pulls live data from the IAU Transient Name Server (TNS) and enriches it with machine learning classifications from ALeRCE, translates the raw science into plain language, and lets you explore exploding stars, feeding black holes, and neutron star collisions through an interactive dashboard.
 
 It also does something no other downstream tool does: **gravitational wave cross-matching**. When LIGO detects spacetime ripples from a cosmic collision, Rubin Scout searches the optical sky for the flash of light from the same event.
 
 ## What You Can Do
 
-**Browse cosmic events.** The dashboard shows real transient discoveries from the IAU Transient Name Server, with ML classifications from ALeRCE and light curves from the Zwicky Transient Facility and Vera C. Rubin Observatory. Each event is translated into human language with descriptions, constellation locations, and confidence scores.
+**Browse cosmic events.** The dashboard shows real transient discoveries from the IAU Transient Name Server (TNS), the official clearinghouse for astronomical transient discoveries. Each TNS object is enriched with ML classifications from ALeRCE, light curves from the Zwicky Transient Facility, and cross-matches from SIMBAD. Everything is translated into human language with descriptions, constellation locations, and confidence scores.
 
 **Explore gravitational wave events.** Six real LIGO/Virgo detections (GW170817, GW190521, and more) with descriptions of what happened, how far away it was, and a button to search for optical counterparts in the alert database.
 
@@ -24,7 +24,7 @@ It also does something no other downstream tool does: **gravitational wave cross
 | Database | PostgreSQL 17 (Supabase) with PostGIS |
 | Frontend | React 18, Vite, Recharts, Tailwind CSS |
 | Deployment | Vercel (frontend), Render (backend), Supabase (database) |
-| Data Sources | TNS (IAU), ALeRCE, LIGO/GraceDB, SIMBAD, GWTC catalogs |
+| Data Sources | TNS (primary), ALeRCE (enrichment), SIMBAD (cross-matching), LIGO/GWTC |
 
 ## Security
 
@@ -93,11 +93,11 @@ rubin-scout/
 
 ## Data Sources and Attribution
 
-- [IAU Transient Name Server](https://www.wis-tns.org) for real-time transient discoveries (primary source)
+- [IAU Transient Name Server](https://www.wis-tns.org) for spectroscopic transient discoveries (primary source)
 - [ALeRCE Broker](https://alerce.science) for ML classifications and light curves. Cite: Forster et al. (2021), AJ, 161, 242
 - [Zwicky Transient Facility](https://www.ztf.caltech.edu) for optical survey data. Cite: Bellm et al. (2019), PASP, 131, 018002
 - [LIGO/Virgo/KAGRA](https://gwosc.org) for gravitational wave data. Cite per event as specified by LVK
-- [SIMBAD](https://simbad.u-strasbg.fr) for astronomical object cross-matching
+- [SIMBAD](https://simbad.u-strasbag.fr) for astronomical object cross-matching
 - [Astropy](https://www.astropy.org) for coordinate transforms and time conversions
 
 ## Contributing

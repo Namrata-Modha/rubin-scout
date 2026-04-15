@@ -18,7 +18,7 @@ Or on Windows, just run `start.bat`.
 ```
 backend/app/
   api/              REST endpoints (alerts, GW events, subscriptions)
-  ingestion/        ALeRCE data pulling and scheduling
+  ingestion/        TNS CSV ingestion + ALeRCE enrichment and scheduling
   enrichment/       SIMBAD cross-matching, GW skymap cross-matching
   models/           SQLAlchemy ORM models (7 tables)
   notifications/    Slack, email, webhook delivery
@@ -44,26 +44,30 @@ frontend/src/
 **Backend (Python):**
 - Full HEALPix skymap parsing for GW cross-matching (replace circular approximation)
 - Additional broker integrations (Fink, Lasair, ANTARES)
-- NED and TNS cross-matching
+- NED cross-matching (in addition to SIMBAD)
 - Kafka consumer for real-time ALeRCE streaming
 - Luminosity distance filtering for GW candidates
+- Bayesian ranking for GW counterpart candidates
 
 **Frontend (React):**
 - Mobile-responsive layout
 - Interactive sky map improvements (zoom, pan, click to filter)
 - Light curve template overlay (compare against known SN models)
 - GW skymap visualization (plot the probability contours on the sky map)
+- Filter persistence (save filter state in URL or local storage)
 
 **Science and Documentation:**
-- More GW events from GWTC-4.0
+- More GW events from GWTC-4.0 with detailed descriptions
 - Validation against known transient catalogs
 - Jupyter notebooks demonstrating science use cases
 - Tutorials for astronomers and curious non-experts
+- Science validation: compare ALeRCE classifications to spectroscopic confirmations
 
 **Infrastructure:**
 - Monitoring and alerting (health check endpoints exist, need dashboarding)
 - Load testing for high-volume ingestion
-- CI/CD improvements
+- CI/CD improvements (automated testing on PRs)
+- Caching layer for telescope images to reduce Legacy Survey rate limiting
 
 ## Security
 
