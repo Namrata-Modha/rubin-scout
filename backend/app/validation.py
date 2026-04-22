@@ -42,7 +42,7 @@ OID_ZTF_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
 OID_TNS_PATTERN = re.compile(r"^(AT|SN|FRB|TDE)\d{4}[a-z]{1,8}$")
 
 # Combined: accept either format
-OID_PATTERN = re.compile(r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|FRB)\d{4}[a-z]{1,8})$")
+OID_PATTERN = re.compile(r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|FRB|TDE)\d{4}[a-z]{1,8})$")
 
 # GW superevent IDs: "GW" or "S" followed by digits and optional letter
 GW_EVENT_PATTERN = re.compile(r"^(GW|S)\d{6}[a-z]?$")
