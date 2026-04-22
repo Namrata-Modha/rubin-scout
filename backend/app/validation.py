@@ -39,7 +39,7 @@ OID_ZTF_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
 
 # TNS object IDs: prefix (AT, SN, etc.) followed by year and letter sequence
 # Examples: AT2026frd, SN2026bgd, AT2024ryv
-OID_TNS_PATTERN = re.compile(r"^(AT|SN|FRB)\d{4}[a-z]{1,8}$")
+OID_TNS_PATTERN = re.compile(r"^(AT|SN|FRB|TDE)\d{4}[a-z]{1,8}$")
 
 # Combined: accept either format
 OID_PATTERN = re.compile(r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|FRB)\d{4}[a-z]{1,8})$")
