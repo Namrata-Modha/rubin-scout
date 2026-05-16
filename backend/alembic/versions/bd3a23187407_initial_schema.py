@@ -1,15 +1,15 @@
 """Initial schema
 
 Revision ID: bd3a23187407
-Revises: 
+Revises:
 Create Date: 2026-04-07 22:06:24.670446
 
 """
 from typing import Sequence, Union
-from alembic import op
-import sqlalchemy as sa
-from geoalchemy2 import Geography
 
+import sqlalchemy as sa
+
+from alembic import op
 
 revision: str = 'bd3a23187407'
 down_revision: Union[str, None] = None
@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Create PostGIS extension
     op.execute('CREATE EXTENSION IF NOT EXISTS postgis')
-    
+
     # Create objects table
     op.create_table(
         'objects',
@@ -47,18 +47,18 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
         sa.PrimaryKeyConstraint('oid')
     )
-    
+
     # Add PostGIS geography column
     op.execute("""
-        ALTER TABLE objects 
+        ALTER TABLE objects
         ADD COLUMN position GEOGRAPHY(POINT, 4326)
     """)
-    
+
     # Create indexes on objects
     op.create_index('ix_objects_classification', 'objects', ['classification'])
     op.create_index('ix_objects_last_detection', 'objects', ['last_detection'])
     op.execute('CREATE INDEX idx_objects_position ON objects USING GIST(position)')
-    
+
     # Create detections table
     op.create_table(
         'detections',
@@ -76,10 +76,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.ForeignKeyConstraint(['oid'], ['objects.oid'])
     )
-    
+
     # Create index on detections
     op.create_index('ix_detections_oid_time', 'detections', ['oid', 'detection_time'])
-    
+
     # Create classification_probabilities table
     op.create_table(
         'classification_probabilities',
@@ -93,10 +93,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.ForeignKeyConstraint(['oid'], ['objects.oid'])
     )
-    
+
     # Create index on classification_probabilities
     op.create_index('ix_classification_probabilities_oid', 'classification_probabilities', ['oid'])
-    
+
     # Create subscriptions table
     op.create_table(
         'subscriptions',
@@ -111,10 +111,10 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
         sa.PrimaryKeyConstraint('id')
     )
-    
+
     # Create index on subscriptions
     op.create_index('ix_subscriptions_active', 'subscriptions', ['active'])
-    
+
     # Create photometry table
     op.create_table(
         'photometry',
@@ -133,7 +133,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.ForeignKeyConstraint(['oid'], ['objects.oid'])
     )
-    
+
     # Create index on photometry
     op.create_index('ix_photometry_oid', 'photometry', ['oid'])
 

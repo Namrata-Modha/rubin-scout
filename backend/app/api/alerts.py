@@ -30,11 +30,11 @@ logger = logging.getLogger(__name__)
 iers.conf.auto_download = False
 iers.conf.auto_max_age = None
 
-from app.database import get_db
-from app.models.models import ClassificationProbability, Detection, Object
-from app.security import limiter
-from app.utils.observatories import OBSERVATORY_PRESETS
-from app.validation import validate_classification, validate_oid
+from app.database import get_db  # noqa: E402
+from app.models.models import ClassificationProbability, Detection, Object  # noqa: E402
+from app.security import limiter  # noqa: E402
+from app.utils.observatories import OBSERVATORY_PRESETS  # noqa: E402
+from app.validation import validate_classification, validate_oid  # noqa: E402
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 
@@ -106,7 +106,11 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     start_of_night = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
     times_utc = [start_of_night + timedelta(hours=h) for h in range(25)]
     # scale='utc' avoids the UT1 lookup that would trigger an IERS download
-    times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
+    # times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
+    times_ap = Time(
+        [t.replace(tzinfo=None).isoformat() for t in times_utc], 
+        scale="utc"
+    )
 
     location = EarthLocation.from_geodetic(
         lon=lon * u.deg, lat=lat * u.deg, height=elevation * u.m

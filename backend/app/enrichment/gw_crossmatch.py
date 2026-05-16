@@ -14,7 +14,7 @@ falls back to angular distance matching.
 
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 
 import httpx
 from astropy.time import Time
@@ -105,7 +105,7 @@ async def fetch_gwosc_events() -> list[dict]:
         far = evt.get("far")
 
         dist = evt.get("luminosity_distance")
-        dist_unit = evt.get("luminosity_distance_unit", "Mpc")
+        evt.get("luminosity_distance_unit", "Mpc")
 
         properties = {
             "ra_center": None,
