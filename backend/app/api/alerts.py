@@ -105,8 +105,10 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     # Build 25 hourly time steps covering tonight (midnight UTC → next midnight)
     start_of_night = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
     times_utc = [start_of_night + timedelta(hours=h) for h in range(25)]
-    # scale='utc' avoids the UT1 lookup that would trigger an IERS download
-    times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
+    # astropy Time rejects the "+00:00" timezone suffix produced by isoformat();
+    # use strftime to produce bare "YYYY-MM-DDTHH:MM:SS" strings it accepts.
+    # scale='utc' avoids the UT1 lookup that would trigger an IERS download.
+    times_ap = Time([t.strftime("%Y-%m-%dT%H:%M:%S") for t in times_utc], scale="utc")
 
     location = EarthLocation.from_geodetic(
         lon=lon * u.deg, lat=lat * u.deg, height=elevation * u.m
