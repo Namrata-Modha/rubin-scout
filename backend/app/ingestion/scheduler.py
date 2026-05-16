@@ -18,7 +18,9 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.enrichment.crossmatch import EnrichmentService
+from app.enrichment.gw_crossmatch import GWCrossMatchService
 from app.ingestion.alerce_service import AlerceIngestionService
+from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
 
@@ -27,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 tns_service = TNSIngestionService()
 alerce_service = AlerceIngestionService()
+chime_service = ChimeFRBIngestionService()
 enrichment_service = EnrichmentService()
+gw_service = GWCrossMatchService()
 
 # Global scheduler instance
 _scheduler = None
@@ -45,6 +49,11 @@ async def run_ingestion_cycle():
             logger.info("Fetching new objects from TNS...")
             tns_count = await tns_service.ingest_from_daily_csv(session)
             logger.info(f"✓ Ingested {tns_count} objects from TNS")
+
+            # FRBs: Pull CHIME/FRB catalog detections
+            logger.info("Fetching FRBs from CHIME/FRB catalog...")
+            chime_count = await chime_service.ingest(session)
+            logger.info(f"✓ Ingested {chime_count} FRBs from CHIME/FRB")
 
             # ENRICHMENT: Pull light curves and classifications from ALeRCE
             logger.info("Enriching with ALeRCE data...")
@@ -78,6 +87,27 @@ async def run_ingestion_cycle():
     logger.info("=" * 60)
 
 
+async def keepalive_ping():
+    """Run a minimal SELECT 1 to keep the SQLAlchemy connection pool warm."""
+    from sqlalchemy import text as sa_text
+    async with async_session() as session:
+        try:
+            await session.execute(sa_text("SELECT 1"))
+        except Exception as e:
+            logger.warning(f"Keep-alive ping failed: {e}")
+
+
+async def refresh_gw_events():
+    """Re-seed GW events from GWOSC to pick up new GWTC catalog releases."""
+    logger.info("Refreshing GW events from GWOSC...")
+    async with async_session() as session:
+        try:
+            count = await gw_service.seed_gw_events(session)
+            logger.info(f"✓ GW refresh complete: {count} new events seeded")
+        except Exception as e:
+            logger.error(f"✗ GW event refresh failed: {e}", exc_info=True)
+
+
 def start_background_scheduler():
     """
     Start the background ingestion scheduler.
@@ -102,6 +132,27 @@ def start_background_scheduler():
         replace_existing=True,
     )
 
+    # Re-seed GW events from GWOSC weekly to pick up new catalog releases
+    _scheduler.add_job(
+        refresh_gw_events,
+        "interval",
+        weeks=1,
+        next_run_time=datetime.now(timezone.utc),  # Run once on startup too
+        id="gw_refresh",
+        name="GWOSC GW Event Refresh",
+        replace_existing=True,
+    )
+
+    # Keep-alive: run SELECT 1 every 4 minutes to keep the DB connection pool warm
+    _scheduler.add_job(
+        keepalive_ping,
+        "interval",
+        seconds=240,
+        id="db_keepalive",
+        name="Database Keep-alive",
+        replace_existing=True,
+    )
+
     _scheduler.start()
 
     logger.info("=" * 60)
@@ -111,6 +162,8 @@ def start_background_scheduler():
     logger.info("  - TNS ingestion (primary discovery)")
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
+    logger.info("  - GWOSC GW event refresh (weekly)")
+    logger.info("  - Database keep-alive ping (every 4 min)")
     logger.info("=" * 60)
 
     return _scheduler
