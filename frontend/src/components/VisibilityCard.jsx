@@ -53,21 +53,58 @@ export default function VisibilityCard({ oid }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load presets when card first opens
-  useEffect(() => {
-    if (!open || Object.keys(presets).length > 0) return;
-    getObservatories()
-      .then((res) => setPresets(res.observatories || {}))
-      .catch(() => {});
-  }, [open]);
-
-  // Fetch visibility whenever the card is open and selection changes
+  // When the card opens (or selection changes), load presets if needed then
+  // immediately fetch visibility — sequentially so the preset is always
+  // available before we try to read its coordinates.
   useEffect(() => {
     if (!open) return;
-    fetchVisibility();
+
+    async function run() {
+      // Ensure presets are loaded first
+      let activePresets = presets;
+      if (Object.keys(activePresets).length === 0) {
+        try {
+          const res = await getObservatories();
+          activePresets = res.observatories || {};
+          setPresets(activePresets);
+        } catch {
+          return; // can't proceed without presets
+        }
+      }
+
+      // Derive coordinates from preset or custom input
+      let lat, lon, elevation;
+      if (useCustom) {
+        lat = parseFloat(custom.lat);
+        lon = parseFloat(custom.lon);
+        elevation = parseFloat(custom.elevation) || 0;
+        if (isNaN(lat) || isNaN(lon)) return;
+      } else {
+        const preset = activePresets[selectedKey];
+        if (!preset) return;
+        lat = preset.lat;
+        lon = preset.lon;
+        elevation = preset.elevation_m ?? 0;
+      }
+
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await getVisibility(oid, { lat, lon, elevation });
+        console.log("[VisibilityCard] API response:", result);
+        setData(result);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    run();
   }, [open, selectedKey, useCustom]);
 
   async function fetchVisibility() {
+    // Called by the Refresh button — presets are guaranteed loaded by then
     let lat, lon, elevation;
     if (useCustom) {
       lat = parseFloat(custom.lat);
@@ -86,6 +123,7 @@ export default function VisibilityCard({ oid }) {
     setError(null);
     try {
       const result = await getVisibility(oid, { lat, lon, elevation });
+      console.log("[VisibilityCard] API response:", result);
       setData(result);
     } catch (err) {
       setError(err.message);
@@ -98,9 +136,12 @@ export default function VisibilityCard({ oid }) {
     ? "Custom location"
     : (presets[selectedKey]?.name ?? selectedKey);
 
-  // Compute dark time boundaries in the same index space as chart data
-  const darkStartTime = data?.dark_start ? new Date(data.dark_start).toISOString() : null;
-  const darkEndTime = data?.dark_end ? new Date(data.dark_end).toISOString() : null;
+  // Use the raw strings from the API — they must exactly match the `time`
+  // values in hourly_altitudes (both come from Python datetime.isoformat()).
+  // Passing through new Date().toISOString() changes the format (+00:00 → .000Z)
+  // which breaks ReferenceArea's x-axis lookup.
+  const darkStartTime = data?.dark_start ?? null;
+  const darkEndTime = data?.dark_end ?? null;
 
   return (
     <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
@@ -228,9 +269,9 @@ export default function VisibilityCard({ oid }) {
                 )}
               </div>
 
-              {/* Altitude chart */}
-              <div className="h-48 mt-2">
-                <ResponsiveContainer width="100%" height="100%">
+              {/* Altitude chart — explicit px height; "100%" is unreliable in Recharts */}
+              <div className="mt-2">
+                <ResponsiveContainer width="100%" height={192}>
                   <ComposedChart
                     data={data.hourly_altitudes}
                     margin={{ top: 5, right: 10, left: -10, bottom: 5 }}
