@@ -9,9 +9,13 @@ Security:
 - Parameterized queries only (no SQL injection risk)
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import astropy.units as u
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body, get_sun
+from astropy.time import Time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.models import ClassificationProbability, Detection, Object
 from app.security import limiter
+from app.utils.observatories import OBSERVATORY_PRESETS
 from app.validation import validate_classification, validate_oid
 
 router = APIRouter(prefix="/api", tags=["alerts"])
@@ -70,6 +75,107 @@ async def get_recent_alerts(
         "offset": offset,
         "alerts": [obj.to_dict() for obj in objects],
     }
+
+
+def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation: float, date_str: Optional[str]) -> dict:
+    """
+    Compute tonight's visibility for a sky target from an observer location.
+    Runs synchronously; call via asyncio.to_thread to avoid blocking.
+    """
+    if date_str:
+        try:
+            base_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+        except ValueError:
+            base_date = datetime.now(timezone.utc)
+    else:
+        base_date = datetime.now(timezone.utc)
+
+    # Build 25 hourly time steps covering tonight (midnight UTC → next midnight)
+    start_of_night = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    times_utc = [start_of_night + timedelta(hours=h) for h in range(25)]
+    times_ap = Time([t.isoformat() for t in times_utc])
+
+    location = EarthLocation.from_geodetic(
+        lon=lon * u.deg, lat=lat * u.deg, height=elevation * u.m
+    )
+    altaz_frames = AltAz(obstime=times_ap, location=location)
+
+    target = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+    target_alts = target.transform_to(altaz_frames).alt.deg
+
+    sun_alts = get_sun(times_ap).transform_to(altaz_frames).alt.deg
+
+    # Moon separation at the midpoint of the window
+    midtime = times_ap[12]
+    moon = get_body("moon", midtime, location)
+    moon_sep = round(float(target.separation(moon).deg), 1)
+
+    # Astronomical dark time: sun below −18 deg
+    dark_start = None
+    dark_end = None
+    for t, sun_alt in zip(times_utc, sun_alts):
+        if float(sun_alt) < -18:
+            if dark_start is None:
+                dark_start = t
+            dark_end = t
+
+    # Observable: target exceeds 30 deg during dark time for at least 1 hour
+    observable_hours = sum(
+        1 for t, alt, sun_alt in zip(times_utc, target_alts, sun_alts)
+        if float(sun_alt) < -18 and float(alt) > 30
+    )
+
+    hourly_altitudes = [
+        {
+            "time": t.isoformat(),
+            "altitude": round(float(alt), 2),
+            "sun_altitude": round(float(sun_alt), 2),
+        }
+        for t, alt, sun_alt in zip(times_utc, target_alts, sun_alts)
+    ]
+
+    return {
+        "hourly_altitudes": hourly_altitudes,
+        "dark_start": dark_start.isoformat() if dark_start else None,
+        "dark_end": dark_end.isoformat() if dark_end else None,
+        "moon_separation": moon_sep,
+        "observable": observable_hours >= 1,
+        "max_altitude": round(float(max(target_alts)), 1),
+        "observable_hours": observable_hours,
+    }
+
+
+@router.get("/alerts/{oid}/visibility")
+@limiter.limit("30/minute")
+async def get_visibility(
+    request: Request,
+    oid: str,
+    lat: float = Query(..., ge=-90, le=90, description="Observer latitude (degrees N)"),
+    lon: float = Query(..., ge=-180, le=180, description="Observer longitude (degrees E)"),
+    elevation: float = Query(0.0, ge=-500, le=5000, description="Observer elevation (metres)"),
+    date: Optional[str] = Query(None, description="ISO date string (UTC). Defaults to tonight."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compute tonight's visibility for a transient from a given observer location."""
+    try:
+        oid = validate_oid(oid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid object ID format")
+
+    result = await db.execute(select(Object).where(Object.oid == oid))
+    obj = result.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Object not found")
+
+    # Run astropy computation in a thread to avoid blocking the event loop
+    try:
+        vis = await asyncio.to_thread(
+            _compute_visibility, obj.ra, obj.dec, lat, lon, elevation, date
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Visibility computation failed: {e}")
+
+    return vis
 
 
 @router.get("/alerts/{oid}")
@@ -199,6 +305,13 @@ async def get_summary_stats(
         },
         "latest_alert": latest_obj.to_dict() if latest_obj else None,
     }
+
+
+@router.get("/observatories")
+@limiter.limit("60/minute")
+async def list_observatories(request: Request):
+    """List built-in observatory presets for visibility planning."""
+    return {"observatories": OBSERVATORY_PRESETS}
 
 
 @router.get("/classifications")

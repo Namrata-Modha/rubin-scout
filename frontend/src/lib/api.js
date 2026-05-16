@@ -79,3 +79,15 @@ export async function crossMatchGWEvent(superEventId, { searchRadiusDeg = 15, ti
 export async function seedGWEvents() {
   return fetchJSON(`/gw/seed`, { method: "POST" });
 }
+
+/** Get built-in observatory presets. */
+export async function getObservatories() {
+  return fetchJSON(`/observatories`);
+}
+
+/** Get tonight's visibility for an object from a given observer location. */
+export async function getVisibility(oid, { lat, lon, elevation = 0, date = null } = {}) {
+  const params = new URLSearchParams({ lat, lon, elevation });
+  if (date) params.set("date", date);
+  return fetchJSON(`/alerts/${oid}/visibility?${params}`);
+}

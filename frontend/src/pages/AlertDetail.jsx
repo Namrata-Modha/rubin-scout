@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, ExternalLink, Sparkles } from "lucide-react";
 import LightCurveChart from "../components/LightCurveChart";
+import VisibilityCard from "../components/VisibilityCard";
 import ClassBadge from "../components/ClassBadge";
 import { getAlertDetail } from "../lib/api";
 import {
@@ -212,6 +213,9 @@ export default function AlertDetail() {
         </h2>
         <LightCurveChart lightCurve={data.light_curve} />
       </div>
+
+      {/* Visibility planning */}
+      <VisibilityCard oid={obj.oid} />
 
       {/* Classification probabilities */}
       {data.probabilities && data.probabilities.length > 0 && (
