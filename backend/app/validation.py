@@ -18,13 +18,14 @@ from pydantic import BaseModel, Field, field_validator
 # Allowlists
 # ---------------------------------------------------------------------------
 
-# Valid ALeRCE classification classes
+# Valid ALeRCE classification classes plus CHIME/FRB source
 VALID_CLASSIFICATIONS = {
     "SNIa", "SNII", "SNIbc", "SLSN",
     "TDE", "KN",
     "AGN", "Blazar", "QSO",
     "CV/Nova",
     "LPV", "DSCT", "RRL", "CEP", "EB", "Periodic-Other",
+    "FRB",
 }
 
 # Valid notification methods
@@ -39,10 +40,16 @@ OID_ZTF_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
 
 # TNS object IDs: prefix (AT, SN, etc.) followed by year and letter sequence
 # Examples: AT2026frd, SN2026bgd, AT2024ryv
-OID_TNS_PATTERN = re.compile(r"^(AT|SN|FRB|TDE)\d{4}[a-z]{1,8}$")
+OID_TNS_PATTERN = re.compile(r"^(AT|SN|TDE)\d{4}[a-z]{1,8}$")
 
-# Combined: accept either format
-OID_PATTERN = re.compile(r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|FRB|TDE)\d{4}[a-z]{1,8})$")
+# CHIME/FRB IDs: "FRB" + 4–8 digit date/year + 0–8 lowercase letters/digits
+# Examples: FRB2020xyz (TNS-registered), FRB20121102a (CHIME date-based)
+OID_FRB_PATTERN = re.compile(r"^FRB\d{4,8}[a-z]{0,8}$")
+
+# Combined: accept ZTF, TNS, FRB, or TDE format
+OID_PATTERN = re.compile(
+    r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|TDE)\d{4}[a-z]{1,8}|FRB\d{4,8}[a-z]{0,8})$"
+)
 
 # GW superevent IDs: "GW" or "S" followed by digits and optional letter
 GW_EVENT_PATTERN = re.compile(r"^(GW|S)\d{6}[a-z]?$")

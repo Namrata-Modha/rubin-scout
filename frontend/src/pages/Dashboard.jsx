@@ -165,6 +165,7 @@ export default function Dashboard() {
           { label: "Kilonova", emoji: "🔔", value: "KN", color: "#ffd43b" },
           { label: "Nova", emoji: "🔥", value: "CV/Nova", color: "#69db7c" },
           { label: "Blazar", emoji: "🔦", value: "Blazar", color: "#748ffc" },
+          { label: "Fast Radio Burst", emoji: "📡", value: "FRB", color: "#e599f7" },
         ].map((cat) => {
           const isActive = selectedClass === cat.value;
           return (

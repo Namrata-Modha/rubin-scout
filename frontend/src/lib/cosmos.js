@@ -89,6 +89,14 @@ export const CLASS_INFO = {
       "A white dwarf star in a binary system that periodically erupts when hydrogen from its companion accumulates on its surface and ignites in a thermonuclear flash. Unlike a supernova, the star survives.",
     color: "#69db7c",
   },
+  FRB: {
+    name: "Fast Radio Burst",
+    emoji: "📡",
+    short: "Millisecond cosmic radio flash",
+    description:
+      "An extremely brief but intensely bright burst of radio waves from across the cosmos, lasting only milliseconds. Most are one-off events with unknown origins; a few repeat. Detected by CHIME at DRAO Penticton, Canada.",
+    color: "#e599f7",
+  },
 };
 
 export function getClassInfo(classification) {

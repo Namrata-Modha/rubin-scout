@@ -43,6 +43,7 @@ class Object(Base):
     cross_match_distance_arcsec = Column(Float)
     host_galaxy_name = Column(String)
     host_galaxy_redshift = Column(Float)
+    dispersion_measure = Column(Float, nullable=True)
     broker_source = Column(String, default="tns")
     alert_url = Column(String)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -66,6 +67,7 @@ class Object(Base):
             "cross_match_type": self.cross_match_type,
             "host_galaxy_name": self.host_galaxy_name,
             "host_galaxy_redshift": self.host_galaxy_redshift,
+            "dispersion_measure": self.dispersion_measure,
             "broker_source": self.broker_source,
             "alert_url": self.alert_url,
         }

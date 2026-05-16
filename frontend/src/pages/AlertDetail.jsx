@@ -203,6 +203,23 @@ export default function AlertDetail() {
         </div>
       )}
 
+      {/* Dispersion measure (FRB-specific) */}
+      {obj.dispersion_measure != null && (
+        <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-lg">📡</span>
+            <span className="text-sm text-white/60">Dispersion Measure</span>
+            <span className="text-sm font-mono text-white/80 ml-auto">
+              {obj.dispersion_measure.toFixed(1)} pc/cm³
+            </span>
+          </div>
+          <p className="text-xs text-white/35 mt-2 leading-relaxed">
+            Dispersion measure indicates how much intergalactic material the signal passed through.
+            Higher DM = more distant source.
+          </p>
+        </div>
+      )}
+
       {/* Light curve */}
       <div>
         <h2 className="text-sm font-medium text-white/50 mb-3 flex items-center gap-2">

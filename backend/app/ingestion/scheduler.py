@@ -20,6 +20,7 @@ from app.database import async_session
 from app.enrichment.crossmatch import EnrichmentService
 from app.enrichment.gw_crossmatch import GWCrossMatchService
 from app.ingestion.alerce_service import AlerceIngestionService
+from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
 
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 tns_service = TNSIngestionService()
 alerce_service = AlerceIngestionService()
+chime_service = ChimeFRBIngestionService()
 enrichment_service = EnrichmentService()
 gw_service = GWCrossMatchService()
 
@@ -47,6 +49,11 @@ async def run_ingestion_cycle():
             logger.info("Fetching new objects from TNS...")
             tns_count = await tns_service.ingest_from_daily_csv(session)
             logger.info(f"✓ Ingested {tns_count} objects from TNS")
+
+            # FRBs: Pull CHIME/FRB catalog detections
+            logger.info("Fetching FRBs from CHIME/FRB catalog...")
+            chime_count = await chime_service.ingest(session)
+            logger.info(f"✓ Ingested {chime_count} FRBs from CHIME/FRB")
 
             # ENRICHMENT: Pull light curves and classifications from ALeRCE
             logger.info("Enriching with ALeRCE data...")
