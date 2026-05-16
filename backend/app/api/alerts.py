@@ -108,7 +108,7 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     # scale='utc' avoids the UT1 lookup that would trigger an IERS download
     # times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
     times_ap = Time(
-        [t.replace(tzinfo=None).isoformat() for t in times_utc], 
+        [t.replace(tzinfo=None).isoformat() for t in times_utc],
         scale="utc"
     )
 
