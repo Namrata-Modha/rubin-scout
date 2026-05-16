@@ -10,15 +10,25 @@ Security:
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import astropy.units as u
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body, get_sun
 from astropy.time import Time
+from astropy.utils import iers
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+# Disable IERS-A network downloads so astropy never blocks on a remote fetch.
+# The built-in IERS-B table (shipped with astropy) is accurate to ~1 arcsec,
+# which is more than enough for visibility planning.
+iers.conf.auto_download = False
+iers.conf.auto_max_age = None
 
 from app.database import get_db
 from app.models.models import ClassificationProbability, Detection, Object
@@ -81,6 +91,8 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     """
     Compute tonight's visibility for a sky target from an observer location.
     Runs synchronously; call via asyncio.to_thread to avoid blocking.
+
+    Uses only built-in astropy ephemerides (no runtime data downloads).
     """
     if date_str:
         try:
@@ -93,7 +105,8 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     # Build 25 hourly time steps covering tonight (midnight UTC → next midnight)
     start_of_night = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
     times_utc = [start_of_night + timedelta(hours=h) for h in range(25)]
-    times_ap = Time([t.isoformat() for t in times_utc])
+    # scale='utc' avoids the UT1 lookup that would trigger an IERS download
+    times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
 
     location = EarthLocation.from_geodetic(
         lon=lon * u.deg, lat=lat * u.deg, height=elevation * u.m
@@ -103,12 +116,18 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     target = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
     target_alts = target.transform_to(altaz_frames).alt.deg
 
+    # get_sun uses a fast analytical formula — no ephemeris download needed
     sun_alts = get_sun(times_ap).transform_to(altaz_frames).alt.deg
 
-    # Moon separation at the midpoint of the window
-    midtime = times_ap[12]
-    moon = get_body("moon", midtime, location)
-    moon_sep = round(float(target.separation(moon).deg), 1)
+    # Moon: use the built-in low-precision ephemeris so no JPL data is fetched.
+    # ephemeris='builtin' is always available; it's accurate to ~1 arcmin.
+    moon_sep = None
+    try:
+        midtime = times_ap[12]
+        moon = get_body("moon", midtime, location, ephemeris="builtin")
+        moon_sep = round(float(target.separation(moon).deg), 1)
+    except Exception as exc:
+        logger.warning("Moon position calculation failed, omitting: %s", exc)
 
     # Astronomical dark time: sun below −18 deg
     dark_start = None
@@ -173,7 +192,11 @@ async def get_visibility(
             _compute_visibility, obj.ra, obj.dec, lat, lon, elevation, date
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Visibility computation failed: {e}")
+        logger.error("Visibility computation failed for %s: %s: %s", oid, type(e).__name__, e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Visibility computation failed ({type(e).__name__}): {e}",
+        )
 
     return vis
 

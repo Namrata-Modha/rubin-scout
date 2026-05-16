@@ -173,7 +173,13 @@ export default function VisibilityCard({ oid }) {
                   setSelectedKey(e.target.value);
                 }
               }}
-              className="bg-white/[0.06] border border-white/[0.1] rounded-lg px-3 py-1.5 text-sm text-white/70 focus:outline-none focus:border-white/20"
+              className="border rounded-lg px-3 py-1.5 text-sm focus:outline-none"
+              style={{
+                backgroundColor: "#1c1c2e",
+                color: "rgba(255,255,255,0.75)",
+                borderColor: "rgba(255,255,255,0.12)",
+                colorScheme: "dark",   /* makes the OS-native dropdown list dark */
+              }}
             >
               {Object.entries(presets).map(([key, obs]) => (
                 <option key={key} value={key}>
@@ -254,10 +260,12 @@ export default function VisibilityCard({ oid }) {
                   {data.observable ? "YES" : "NO"}
                 </div>
 
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.06] text-xs text-white/50">
-                  <Moon className="w-3 h-3 text-yellow-400/60" />
-                  Moon {data.moon_separation}° away
-                </div>
+                {data.moon_separation != null && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.06] text-xs text-white/50">
+                    <Moon className="w-3 h-3 text-yellow-400/60" />
+                    Moon {data.moon_separation}° away
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-4 text-xs text-white/35">
