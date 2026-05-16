@@ -4,8 +4,9 @@ Rubin Scout FastAPI Application.
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
@@ -90,3 +91,13 @@ async def root():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/api/health/ping")
+async def ping():
+    """
+    Lightweight keep-alive endpoint for external cron pings.
+    No auth, no rate limit, no database query.
+    Prevents Supabase free tier from sleeping.
+    """
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}

@@ -87,6 +87,16 @@ async def run_ingestion_cycle():
     logger.info("=" * 60)
 
 
+async def keepalive_ping():
+    """Run a minimal SELECT 1 to keep the SQLAlchemy connection pool warm."""
+    from sqlalchemy import text as sa_text
+    async with async_session() as session:
+        try:
+            await session.execute(sa_text("SELECT 1"))
+        except Exception as e:
+            logger.warning(f"Keep-alive ping failed: {e}")
+
+
 async def refresh_gw_events():
     """Re-seed GW events from GWOSC to pick up new GWTC catalog releases."""
     logger.info("Refreshing GW events from GWOSC...")
@@ -133,6 +143,16 @@ def start_background_scheduler():
         replace_existing=True,
     )
 
+    # Keep-alive: run SELECT 1 every 4 minutes to keep the DB connection pool warm
+    _scheduler.add_job(
+        keepalive_ping,
+        "interval",
+        seconds=240,
+        id="db_keepalive",
+        name="Database Keep-alive",
+        replace_existing=True,
+    )
+
     _scheduler.start()
 
     logger.info("=" * 60)
@@ -143,6 +163,7 @@ def start_background_scheduler():
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
     logger.info("  - GWOSC GW event refresh (weekly)")
+    logger.info("  - Database keep-alive ping (every 4 min)")
     logger.info("=" * 60)
 
     return _scheduler
