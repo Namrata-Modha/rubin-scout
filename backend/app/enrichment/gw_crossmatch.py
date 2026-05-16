@@ -14,8 +14,10 @@ falls back to angular distance matching.
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
+import httpx
+from astropy.time import Time
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,123 +28,139 @@ logger = logging.getLogger(__name__)
 # Public GW events from GWTC catalogs (no authentication needed)
 GRACEDB_PUBLIC_URL = "https://gracedb.ligo.org/apiweb/superevents"
 
-# Well-known GW events for demo/seeding (from GWTC-3 and GWTC-4)
-NOTABLE_GW_EVENTS = [
-    {
-        "superevent_id": "GW170817",
-        "event_time": "2017-08-17T12:41:04.4Z",
-        "ra_center": 197.45,
-        "dec_center": -23.38,
-        "area_90_deg2": 28.0,
-        "distance_mpc": 40.0,
-        "distance_err_mpc": 8.0,
-        "classification": {"BNS": 1.0, "NSBH": 0.0, "BBH": 0.0, "Terrestrial": 0.0},
-        "description": "The first gravitational wave event with an electromagnetic counterpart. "
-                       "Two neutron stars merged 130 million light-years away in NGC 4993, "
-                       "producing a kilonova, a gamma-ray burst, and gravitational waves "
-                       "detected simultaneously. This single event confirmed that neutron star "
-                       "mergers produce heavy elements like gold and platinum.",
-    },
-    {
-        "superevent_id": "GW190425",
-        "event_time": "2019-04-25T08:18:05.0Z",
-        "ra_center": None,  # Very poorly localized
-        "dec_center": None,
-        "area_90_deg2": 8284.0,
-        "distance_mpc": 159.0,
-        "distance_err_mpc": 72.0,
-        "classification": {"BNS": 0.99, "NSBH": 0.0, "BBH": 0.0, "Terrestrial": 0.01},
-        "description": "Second confirmed binary neutron star merger, but with only one detector "
-                       "operating, the sky localization was extremely poor (nearly a quarter of the sky).",
-    },
-    {
-        "superevent_id": "GW190521",
-        "event_time": "2019-05-21T03:02:29.7Z",
-        "ra_center": 189.0,
-        "dec_center": -36.0,
-        "area_90_deg2": 765.0,
-        "distance_mpc": 5300.0,
-        "distance_err_mpc": 2600.0,
-        "classification": {"BNS": 0.0, "NSBH": 0.0, "BBH": 0.99, "Terrestrial": 0.01},
-        "description": "The most massive binary black hole merger detected, producing a ~150 solar mass "
-                       "remnant. This is in the 'pair-instability mass gap' where black holes shouldn't "
-                       "form from normal stellar evolution, challenging our understanding of how "
-                       "massive black holes form.",
-    },
-    {
-        "superevent_id": "GW200105",
-        "event_time": "2020-01-05T16:24:26.0Z",
-        "ra_center": None,
-        "dec_center": None,
-        "area_90_deg2": 7461.0,
-        "distance_mpc": 280.0,
-        "distance_err_mpc": 110.0,
-        "classification": {"BNS": 0.0, "NSBH": 0.93, "BBH": 0.07, "Terrestrial": 0.0},
-        "description": "First confident detection of a neutron star-black hole merger. "
-                       "A black hole about 9 times the Sun's mass swallowed a neutron star "
-                       "about 1.9 solar masses. No electromagnetic counterpart was found.",
-    },
-    {
-        "superevent_id": "GW200115",
-        "event_time": "2020-01-15T04:23:09.7Z",
-        "ra_center": 30.0,
-        "dec_center": -12.0,
-        "area_90_deg2": 904.0,
-        "distance_mpc": 300.0,
-        "distance_err_mpc": 100.0,
-        "classification": {"BNS": 0.0, "NSBH": 0.99, "BBH": 0.01, "Terrestrial": 0.0},
-        "description": "Second neutron star-black hole merger, with a 6 solar mass black hole "
-                       "and a 1.5 solar mass neutron star. Better localized than GW200105.",
-    },
-    {
-        "superevent_id": "GW231123",
-        "event_time": "2023-11-23T00:00:00Z",
-        "ra_center": None,
-        "dec_center": None,
-        "area_90_deg2": 500.0,
-        "distance_mpc": 10000.0,
-        "distance_err_mpc": 5000.0,
-        "classification": {"BNS": 0.0, "NSBH": 0.0, "BBH": 1.0, "Terrestrial": 0.0},
-        "description": "The highest-mass binary black hole merger in GWTC-4.0, detected during "
-                       "LIGO's fourth observing run. The combined mass of the system pushed the "
-                       "boundaries of what we thought possible for black hole mergers.",
-    },
-]
+# GWOSC public catalog API
+GWOSC_API_URL = "https://gwosc.org/eventapi/json/allevents/"
+
+# Human-readable descriptions for notable events only
+DESCRIPTIONS = {
+    "GW170817": (
+        "The first gravitational wave event with an electromagnetic counterpart. "
+        "Two neutron stars merged 130 million light-years away in NGC 4993, "
+        "producing a kilonova, a gamma-ray burst, and gravitational waves "
+        "detected simultaneously. This single event confirmed that neutron star "
+        "mergers produce heavy elements like gold and platinum."
+    ),
+    "GW190521": (
+        "The most massive binary black hole merger detected, producing a ~150 solar mass "
+        "remnant. This is in the 'pair-instability mass gap' where black holes shouldn't "
+        "form from normal stellar evolution, challenging our understanding of how "
+        "massive black holes form."
+    ),
+    "GW200105": (
+        "First confident detection of a neutron star-black hole merger. "
+        "A black hole about 9 times the Sun's mass swallowed a neutron star "
+        "about 1.9 solar masses. No electromagnetic counterpart was found."
+    ),
+    "GW200115": (
+        "Second neutron star-black hole merger, with a 6 solar mass black hole "
+        "and a 1.5 solar mass neutron star. Better localized than GW200105."
+    ),
+    "GW231123": (
+        "The highest-mass binary black hole merger in GWTC-4.0, detected during "
+        "LIGO's fourth observing run. The combined mass of the system pushed the "
+        "boundaries of what we thought possible for black hole mergers."
+    ),
+}
+
+
+async def fetch_gwosc_events() -> list[dict]:
+    """
+    Fetch all public GW events from the GWOSC catalog API.
+
+    Returns a list of dicts ready to be upserted into the GWEvent table.
+    Returns an empty list if GWOSC is unreachable.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(GWOSC_API_URL)
+            response.raise_for_status()
+            data = response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch GWOSC events: {e}")
+        return []
+
+    # The API returns a dict keyed by "{commonName}-v{N}" version strings.
+    # Deduplicate by commonName, keeping the highest version number.
+    events_by_name: dict[str, dict] = {}
+    for version_key, evt in data.items():
+        common_name = evt.get("commonName")
+        if not common_name:
+            continue
+        existing = events_by_name.get(common_name)
+        if existing is None or evt.get("version", 0) > existing.get("version", 0):
+            events_by_name[common_name] = evt
+
+    result = []
+    for common_name, evt in events_by_name.items():
+        gps = evt.get("GPS")
+        if gps is None:
+            continue
+
+        try:
+            event_time = Time(float(gps), format="gps").to_datetime(timezone=timezone.utc)
+        except Exception as e:
+            logger.warning(f"Could not convert GPS {gps} for {common_name}: {e}")
+            continue
+
+        far = evt.get("far")
+
+        dist = evt.get("luminosity_distance")
+        dist_unit = evt.get("luminosity_distance_unit", "Mpc")
+
+        properties = {
+            "ra_center": None,
+            "dec_center": None,
+            "area_90_deg2": None,
+            "distance_mpc": float(dist) if dist is not None else None,
+            "distance_err_mpc": None,
+            "description": DESCRIPTIONS.get(common_name),
+            "catalog": evt.get("catalog.shortName"),
+        }
+
+        result.append({
+            "superevent_id": common_name,
+            "event_time": event_time,
+            "far": float(far) if far is not None else None,
+            "classification": {},
+            "properties": properties,
+        })
+
+    logger.info(f"Fetched {len(result)} GW events from GWOSC")
+    return result
 
 
 class GWCrossMatchService:
     """Cross-matches optical transients with gravitational wave events."""
 
     async def seed_gw_events(self, session: AsyncSession) -> int:
-        """Load notable GW events into the database."""
+        """Load GW events from GWOSC into the database. Upserts all events."""
+        events = await fetch_gwosc_events()
+        if not events:
+            logger.warning("No events returned from GWOSC; skipping seed")
+            return 0
+
         count = 0
-        for evt in NOTABLE_GW_EVENTS:
+        for evt in events:
+            superevent_id = evt["superevent_id"]
             existing = await session.execute(
-                select(GWEvent).where(GWEvent.superevent_id == evt["superevent_id"])
+                select(GWEvent).where(GWEvent.superevent_id == superevent_id)
             )
             if existing.scalar_one_or_none():
                 continue
 
             gw = GWEvent(
-                superevent_id=evt["superevent_id"],
-                event_time=datetime.fromisoformat(evt["event_time"].replace("Z", "+00:00")),
-                far=None,
-                skymap_url=f"{GRACEDB_PUBLIC_URL}/{evt['superevent_id']}/files/bayestar.multiorder.fits",
+                superevent_id=superevent_id,
+                event_time=evt["event_time"],
+                far=evt["far"],
+                skymap_url=f"{GRACEDB_PUBLIC_URL}/{superevent_id}/files/bayestar.multiorder.fits",
                 classification=evt["classification"],
-                properties={
-                    "ra_center": evt.get("ra_center"),
-                    "dec_center": evt.get("dec_center"),
-                    "area_90_deg2": evt.get("area_90_deg2"),
-                    "distance_mpc": evt.get("distance_mpc"),
-                    "distance_err_mpc": evt.get("distance_err_mpc"),
-                    "description": evt.get("description"),
-                },
+                properties=evt["properties"],
             )
             session.add(gw)
             count += 1
 
         await session.commit()
-        logger.info(f"Seeded {count} GW events")
+        logger.info(f"Seeded {count} new GW events from GWOSC")
         return count
 
     async def cross_match_event(
