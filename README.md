@@ -1,60 +1,92 @@
 # Rubin Scout
 
-**The cosmos for curious humans.**
+**Open-source multi-messenger astronomical alert platform.**
 
-Rubin Scout makes real astronomical discoveries accessible. It pulls live data from the IAU Transient Name Server (TNS) and enriches it with machine learning classifications from ALeRCE, translates the raw science into plain language, and lets you explore exploding stars, feeding black holes, and neutron star collisions through an interactive dashboard.
+Rubin Scout aggregates transient detections from multiple sky surveys and gravitational wave catalogs into a single searchable database. It enriches each event with ML classifications, photometry, SIMBAD cross-matches, and observatory visibility windows, and exposes everything through a REST API and interactive dashboard.
 
-It also does something no other downstream tool does: **gravitational wave cross-matching**. When LIGO detects spacetime ripples from a cosmic collision, Rubin Scout searches the optical sky for the flash of light from the same event.
+**Live:** https://rubin-scout.vercel.app  
+**API docs:** https://rubin-scout.vercel.app/api/docs  
+**Version:** v0.1
 
-## What You Can Do
+---
 
-**Browse cosmic events.** The dashboard shows real transient discoveries from the IAU Transient Name Server (TNS), the official clearinghouse for astronomical transient discoveries. Each TNS object is enriched with ML classifications from ALeRCE, light curves from the Zwicky Transient Facility, and cross-matches from SIMBAD. Everything is translated into human language with descriptions, constellation locations, and confidence scores.
+## Data Sources
 
-**Explore gravitational wave events.** Six real LIGO/Virgo detections (GW170817, GW190521, and more) with descriptions of what happened, how far away it was, and a button to search for optical counterparts in the alert database.
+| Source | What it provides | Cadence |
+|--------|-----------------|---------|
+| [IAU Transient Name Server](https://www.wis-tns.org) | Spectroscopically classified transients (primary) | Daily CSV + API |
+| [ALeRCE](https://alerce.science) | ZTF light curves, g/r band photometry, ML classifications | Per ingestion cycle |
+| [GWOSC / GWTC](https://gwosc.org) | Full GWTC catalog of GW events (GPS→UTC, all versions) | Weekly refresh |
+| [SIMBAD](https://simbad.u-strasbg.fr) | Catalog cross-matches within 5 arcsec | Per new object |
+| [Legacy Survey](https://www.legacysurvey.org) | Optical cutout images | On demand |
+| [CHIME/FRB](https://www.chime-frb.ca) | Fast Radio Burst catalog (integration ready) | Per ingestion cycle |
 
-**Filter and subscribe.** Filter by event type, confidence level, and time window. Set up notification subscriptions to get alerts via Slack, email, or webhooks when new events match your criteria.
+---
 
-**Query the API.** Every feature is available through a REST API with full Swagger documentation, cone search (spatial queries), and pagination.
+## Features
+
+**Transient alert browser**  
+Paginated dashboard filtered by classification (SNIa, SNII, SNIbc, SLSN, TDE, KN, AGN, Blazar, QSO, CV/Nova, FRB), time window, and ML confidence threshold. Each object shows a Legacy Survey cutout, ZTF light curve, per-band photometry (g/r/i), SIMBAD association, and classification probability breakdown.
+
+**Gravitational wave counterpart search**  
+All public LIGO/Virgo/KAGRA events from GWOSC are ingested automatically. For localized events the PostGIS `ST_DWithin` query finds optical transients within the 90% credible region detected within a configurable time window around the GW trigger.
+
+**Observatory visibility planning**  
+`GET /api/alerts/{oid}/visibility` computes an hourly altitude curve, astronomical dark window (sun < −18°), moon separation, and observable flag (target > 30° for ≥1 hr during dark time) for any observer location. Built-in presets:
+
+| Observatory | Location |
+|-------------|----------|
+| Devasthal (ARIES/ILMT) | Nainital, India |
+| DRAO Penticton | British Columbia, Canada |
+| DAO Victoria | British Columbia, Canada |
+| Mauna Kea | Hawaii, USA |
+| Paranal (VLT) | Atacama Desert, Chile |
+| La Palma (ORM) | Canary Islands, Spain |
+| Palomar | California, USA |
+
+**REST API**  
+All data accessible via JSON endpoints. Key routes:
+
+```
+GET /api/alerts/recent          Paginated alert list with filters
+GET /api/alerts/{oid}           Full object detail + light curve + probabilities
+GET /api/alerts/{oid}/visibility Observatory visibility computation
+GET /api/alerts/conesearch/query PostGIS cone search (ra, dec, radius_arcsec)
+GET /api/observatories          Observatory preset list
+GET /api/gw/events              All GW events with candidate counts
+GET /api/health/ping            Keep-alive / uptime check
+```
+
+Full Swagger UI at `/api/docs` (development) and the live API docs link above.
+
+---
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.13, FastAPI, SQLAlchemy, slowapi |
-| Database | PostgreSQL 17 (Supabase) with PostGIS |
+| Backend | Python 3.13, FastAPI, SQLAlchemy (async), APScheduler |
+| Database | PostgreSQL 17 + PostGIS (Supabase) |
 | Frontend | React 18, Vite, Recharts, Tailwind CSS |
-| Deployment | Vercel (frontend), Render (backend), Supabase (database) |
-| Data Sources | TNS (primary), ALeRCE (enrichment), SIMBAD (cross-matching), LIGO/GWTC |
+| Astronomy | astropy ≥ 6.1, astroquery, alerce client |
+| Deployment | Vercel (frontend), Render (backend) |
 
-## Security
-
-- Rate limiting on all endpoints (60/min reads, 10/min writes) via slowapi
-- OWASP security headers on every response
-- Admin API key required for write endpoints in production
-- Strict input validation with Pydantic models and regex patterns
-- Classification and filter allowlists (no arbitrary input passes through)
-- Email masking in list views
-- Request body size limit (1 MB)
-- CORS restricted to configured origins
-- Swagger docs disabled in production
-- Row Level Security enabled on Supabase tables with user data
+---
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/Namrata-Modha/rubin-scout.git
 cd rubin-scout
+cp .env.example .env         # add TNS credentials and DATABASE_URL
 
-# Windows: double-click start.bat
-# Or manually:
-cp .env.example .env
-docker compose up -d db
-
+# Backend
 cd backend
 pip install -r requirements.txt
+alembic upgrade head
 uvicorn app.main:app --reload
 
-# In another terminal:
+# Frontend (separate terminal)
 cd frontend
 npm install
 npm run dev
@@ -62,48 +94,48 @@ npm run dev
 
 Dashboard at http://localhost:5173. API docs at http://localhost:8000/docs.
 
-See [docs/getting-started.md](docs/getting-started.md) for detailed setup instructions.
+See [docs/getting-started.md](docs/getting-started.md) for environment variables and TNS credential setup.
+
+---
 
 ## Project Structure
 
 ```
 rubin-scout/
-├── backend/                 Python FastAPI backend
-│   ├── app/
-│   │   ├── api/             Route handlers (alerts, GW, subscriptions)
-│   │   ├── ingestion/       TNS + ALeRCE data pulling and scheduling
-│   │   ├── enrichment/      SIMBAD cross-matching, GW cross-matching
-│   │   ├── models/          SQLAlchemy ORM models
-│   │   ├── notifications/   Slack, email, webhook delivery
-│   │   ├── security.py      Rate limiting, headers, admin key
-│   │   └── validation.py    Input validation, allowlists, patterns
-│   ├── tests/
-│   └── sql/                 Database schema
-├── frontend/                React + Vite dashboard
-│   └── src/
-│       ├── components/      SkyMap, AlertTable, LightCurveChart, etc.
-│       ├── pages/           Dashboard, AlertDetail, GravitationalWaves
-│       └── lib/             API client, cosmos translation layer
-├── notebooks/               Jupyter exploration notebooks
-├── scripts/                 CLI utilities (seed, verify, diagnose)
-├── docs/                    Architecture, science guide, getting started
-├── start.bat / stop.bat     Windows one-click start/stop
-└── render.yaml              Render deployment config
+├── backend/app/
+│   ├── api/             Route handlers (alerts, GW, images, subscriptions)
+│   ├── ingestion/       TNS, ALeRCE, CHIME/FRB ingestors + scheduler
+│   ├── enrichment/      SIMBAD cross-matching, GW counterpart search
+│   ├── utils/           Observatory presets
+│   ├── models/          SQLAlchemy ORM
+│   └── validation.py    Input validation, OID patterns, classification allowlist
+├── frontend/src/
+│   ├── components/      SkyMap, LightCurveChart, VisibilityCard, AlertTable
+│   ├── pages/           Dashboard, AlertDetail, GravitationalWaves
+│   └── lib/             API client, astronomy utilities, class metadata
+├── backend/alembic/     Database migrations
+├── docs/                Architecture notes, science guide
+└── KEEPALIVE.md         Supabase free-tier keep-alive setup
 ```
 
-## Data Sources and Attribution
+---
 
-- [IAU Transient Name Server](https://www.wis-tns.org) for spectroscopic transient discoveries (primary source)
-- [ALeRCE Broker](https://alerce.science) for ML classifications and light curves. Cite: Forster et al. (2021), AJ, 161, 242
-- [Zwicky Transient Facility](https://www.ztf.caltech.edu) for optical survey data. Cite: Bellm et al. (2019), PASP, 131, 018002
-- [LIGO/Virgo/KAGRA](https://gwosc.org) for gravitational wave data. Cite per event as specified by LVK
-- [SIMBAD](https://simbad.u-strasbag.fr) for astronomical object cross-matching
-- [Astropy](https://www.astropy.org) for coordinate transforms and time conversions
+## Attribution
 
-## Contributing
+If you use Rubin Scout data in research, cite the upstream sources:
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- ALeRCE: Förster et al. (2021), AJ, 161, 242
+- ZTF: Bellm et al. (2019), PASP, 131, 018002
+- GWTC events: per-event citations specified by the LVK collaboration at gwosc.org
+- SIMBAD: Wenger et al. (2000), A&AS, 143, 9
+
+---
+
+*Rubin Scout is an independent open-source project and is not 
+affiliated with the Vera C. Rubin Observatory or the LSST project.*
+
+---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).
