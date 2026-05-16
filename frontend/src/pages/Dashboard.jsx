@@ -200,6 +200,9 @@ export default function Dashboard() {
       {/* Sky Map */}
       <SkyMap
         alerts={alerts}
+        page={page}
+        totalPages={totalPages}
+        total={total}
         onSelectAlert={(alert) => {
           window.location.href = `/alert/${alert.oid}`;
         }}

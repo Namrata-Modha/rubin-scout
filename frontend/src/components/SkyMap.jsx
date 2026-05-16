@@ -195,7 +195,7 @@ function drawAlerts(ctx, alerts, w, h, selectedOid, time) {
   }
 }
 
-export default function SkyMap({ alerts, selectedOid, onSelectAlert }) {
+export default function SkyMap({ alerts, selectedOid, onSelectAlert, page = 1, totalPages = 1, total }) {
   const canvasRef = useRef(null);
   const animRef = useRef(null);
   const bgRef = useRef(null);
@@ -257,7 +257,7 @@ export default function SkyMap({ alerts, selectedOid, onSelectAlert }) {
         <h3 className="text-xs text-white/35 tracking-wider uppercase">
           All-Sky View
           <span className="normal-case tracking-normal ml-2 text-white/20">
-            {alerts?.length || 0} cosmic events
+            Page {page} of {totalPages} · {alerts?.length || 0} events shown
           </span>
         </h3>
         <div className="flex items-center gap-3 text-[9px]">
