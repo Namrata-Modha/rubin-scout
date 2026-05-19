@@ -493,11 +493,11 @@ async def ilmt_followup(
     dec: float = Query(..., ge=-90.0, le=90.0, description="Declination (degrees, J2000)"),
     mjd: float = Query(..., ge=40000.0, le=80000.0, description="Modified Julian Date of ILMT observation"),
     radius_arcsec: float = Query(5.0, ge=0.5, le=300.0, description="Cone-search radius in arcseconds"),
-    observatory_key: Optional[str] = Query(
-        None, max_length=50,
+    observatory_key: str = Query(
+        "devasthal", max_length=50,
         description="Observatory preset key from /api/observatories. "
                     "Pass 'custom' and supply obs_lat/obs_lon/obs_elevation for a custom location. "
-                    "Defaults to Devasthal (ARIES/ILMT).",
+                    "Defaults to 'devasthal' (ARIES/ILMT).",
     ),
     obs_lat: Optional[float] = Query(None, ge=-90.0, le=90.0, description="Custom observer latitude (degrees N)"),
     obs_lon: Optional[float] = Query(None, ge=-180.0, le=180.0, description="Custom observer longitude (degrees E)"),
@@ -518,18 +518,20 @@ async def ilmt_followup(
     query_dt = _mjd_to_datetime(mjd)
     radius_meters = radius_arcsec * 30.87  # 1 arcsec ≈ 30.87 m on the geoid
 
-    # Resolve the observatory for visibility computation
-    if observatory_key and observatory_key != "custom" and observatory_key in OBSERVATORY_PRESETS:
+    # Resolve the observatory for visibility computation.
+    # Default is "devasthal" (set by the Query default above).
+    if observatory_key == "custom" and obs_lat is not None and obs_lon is not None:
+        vis_lat, vis_lon, vis_elevation = obs_lat, obs_lon, obs_elevation
+        vis_observatory_name = "Custom location"
+    elif observatory_key in OBSERVATORY_PRESETS:
         _obs = OBSERVATORY_PRESETS[observatory_key]
         vis_lat, vis_lon, vis_elevation = _obs["lat"], _obs["lon"], _obs["elevation_m"]
         vis_observatory_name = _obs["name"]
-    elif observatory_key == "custom" and obs_lat is not None and obs_lon is not None:
-        vis_lat, vis_lon, vis_elevation = obs_lat, obs_lon, obs_elevation
-        vis_observatory_name = "Custom location"
     else:
-        _devasthal = OBSERVATORY_PRESETS["devasthal"]
-        vis_lat, vis_lon, vis_elevation = _devasthal["lat"], _devasthal["lon"], _devasthal["elevation_m"]
-        vis_observatory_name = _devasthal["name"]
+        # Unknown key — fall back to Devasthal gracefully
+        _obs = OBSERVATORY_PRESETS["devasthal"]
+        vis_lat, vis_lon, vis_elevation = _obs["lat"], _obs["lon"], _obs["elevation_m"]
+        vis_observatory_name = _obs["name"]
 
     # ------------------------------------------------------------------
     # 1. ZTF history — spatial cone search on the objects table
