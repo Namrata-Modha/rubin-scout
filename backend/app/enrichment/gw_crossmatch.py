@@ -134,7 +134,7 @@ async def fetch_gwosc_events() -> list[dict]:
             continue
 
         try:
-            event_time = Time(float(gps), format="gps").to_datetime(timezone=timezone.utc)
+            event_time = Time(float(gps), format="gps").utc.to_datetime(timezone=timezone.utc)
         except Exception as e:
             logger.warning("Could not convert GPS %s for %s: %s", gps, common_name, e)
             skipped += 1
