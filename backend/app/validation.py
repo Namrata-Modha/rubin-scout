@@ -42,13 +42,17 @@ OID_ZTF_PATTERN = re.compile(r"^ZTF\d{2}[a-z]{7,10}$")
 # Examples: AT2026frd, SN2026bgd, AT2024ryv
 OID_TNS_PATTERN = re.compile(r"^(AT|SN|TDE)\d{4}[a-z]{1,8}$")
 
-# CHIME/FRB IDs: "FRB" + 4–8 digit date/year + 0–8 lowercase letters/digits
-# Examples: FRB2020xyz (TNS-registered), FRB20121102a (CHIME date-based)
+# CHIME/FRB IDs (TNS-registered, lowercase suffix): "FRB" + 4–8 digits + 0–8 lowercase letters
+# Examples: FRB2020xyz, FRB20121102a
 OID_FRB_PATTERN = re.compile(r"^FRB\d{4,8}[a-z]{0,8}$")
 
-# Combined: accept ZTF, TNS, FRB, or TDE format
+# CHIME/FRB Catalog 1 IDs (uppercase suffix): "FRB" + 8-digit date + 1–2 uppercase letters
+# Examples: FRB20190701D, FRB20121102A, FRB20180725A
+OID_CHIME_PATTERN = re.compile(r"^FRB\d{8}[A-Z]{1,2}$")
+
+# Combined: accept ZTF, TNS, FRB (lowercase), or CHIME FRB (uppercase) format
 OID_PATTERN = re.compile(
-    r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|TDE)\d{4}[a-z]{1,8}|FRB\d{4,8}[a-z]{0,8})$"
+    r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|TDE)\d{4}[a-z]{1,8}|FRB\d{4,8}[a-z]{0,8}|FRB\d{8}[A-Z]{1,2})$"
 )
 
 # GW superevent IDs: "GW" or "S" followed by digits and optional letter
@@ -68,13 +72,21 @@ WEBHOOK_URL_PATTERN = re.compile(r"^https?://[a-zA-Z0-9.\-]+(:[0-9]+)?(/[^\s]*)?
 def validate_oid(oid: str) -> str:
     """
     Validate and sanitize an astronomical object ID.
-    Accepts ZTF format (ZTF21aaaaaaa) or TNS format (AT2026frd, SN2026bgd).
+
+    Accepted formats:
+      ZTF21aaaaaaa          — ZTF broker IDs
+      AT2026frd / SN2026bgd — TNS-registered names
+      FRB20121102a          — TNS-registered CHIME FRBs (lowercase suffix)
+      FRB20190701D          — CHIME/FRB Catalog 1 IDs (uppercase suffix)
     """
     oid = oid.strip()
     if len(oid) > 30:
         raise ValueError("Object ID too long (max 30 characters)")
     if not OID_PATTERN.match(oid):
-        raise ValueError(f"Invalid object ID format: {oid}. Expected ZTFYYxxxxxxx or ATYYYYxxx / SNYYYYxxx.")
+        raise ValueError(
+            f"Invalid object ID format: {oid}. "
+            "Expected ZTFYYxxxxxxx, ATYYYYxxx, SNYYYYxxx, or FRBYYYYMMDDx."
+        )
     return oid
 
 
