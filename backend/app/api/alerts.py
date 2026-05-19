@@ -32,7 +32,7 @@ iers.conf.auto_download = False
 iers.conf.auto_max_age = None
 
 from app.database import get_db
-from app.enrichment.crossmatch import EnrichmentService
+from app.enrichment.crossmatch import EnrichmentService # noqa: E402
 from app.models.models import ClassificationProbability, Detection, GWEvent, Object
 from app.security import limiter
 from app.utils.observatories import OBSERVATORY_PRESETS
@@ -111,10 +111,12 @@ def _compute_visibility(ra: float, dec: float, lat: float, lon: float, elevation
     # Build 25 hourly time steps covering tonight (midnight UTC → next midnight)
     start_of_night = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
     times_utc = [start_of_night + timedelta(hours=h) for h in range(25)]
-    # astropy Time rejects the "+00:00" timezone suffix produced by isoformat();
-    # use strftime to produce bare "YYYY-MM-DDTHH:MM:SS" strings it accepts.
-    # scale='utc' avoids the UT1 lookup that would trigger an IERS download.
-    times_ap = Time([t.strftime("%Y-%m-%dT%H:%M:%S") for t in times_utc], scale="utc")
+    # scale='utc' avoids the UT1 lookup that would trigger an IERS download
+    # times_ap = Time([t.isoformat() for t in times_utc], scale="utc")
+    times_ap = Time(
+        [t.replace(tzinfo=None).isoformat() for t in times_utc],
+        scale="utc"
+    )
 
     location = EarthLocation.from_geodetic(
         lon=lon * u.deg, lat=lat * u.deg, height=elevation * u.m
