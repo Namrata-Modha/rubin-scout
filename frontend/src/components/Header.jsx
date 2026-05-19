@@ -22,6 +22,9 @@ export default function Header() {
           <Link to="/gravitational-waves" className="hover:text-white transition-colors">
             GW Events
           </Link>
+          <Link to="/followup" className="hover:text-white transition-colors">
+            Follow-Up Planner
+          </Link>
           <a
             href={`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/docs`}
             target="_blank"
