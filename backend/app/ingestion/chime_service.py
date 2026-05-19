@@ -2,26 +2,26 @@
 CHIME/FRB Ingestion Service.
 
 Pulls public Fast Radio Burst (FRB) detections from the CHIME/FRB
-public catalog and stores them in the local database.
+Catalog 1 (CHIME/FRB Collaboration 2021, ApJS 257, 59) via the CDS
+VizieR astronomical data service and stores them in the local database.
 
-Catalog field reference (from CHIME/FRB Catalog 1, CHIME/FRB Collaboration 2021):
-  tns_name    - Transient Name Server identifier (e.g. "FRB 20121102A")
-  ra          - Right Ascension (degrees, J2000)
-  dec         - Declination (degrees, J2000)
-  bonsai_dm   - Dispersion measure (pc/cm^3, BONSAI pipeline value)
-  mjd_400     - MJD of detection (referenced to 400 MHz DM=0)
+VizieR catalog column mapping (J/ApJS/257/59/table2):
+  Name      - TNS name (e.g. "FRB20180725A")
+  RAJ2000   - Right Ascension (degrees, J2000)
+  DEJ2000   - Declination (degrees, J2000)
+  DM        - Dispersion measure (pc/cm³, BONSAI pipeline value)
+  MJD400    - MJD of detection (referenced to 400.1953125 MHz, DM=0)
 
 CHIME is a Canadian telescope at DRAO Penticton, British Columbia.
-Its public catalog requires no authentication.
 """
 
+import io
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from astropy.time import Time
+from astropy.io.votable import parse_single_table
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,30 +30,15 @@ from app.models.models import Detection, IngestionLog, Object
 
 logger = logging.getLogger(__name__)
 
-# Primary catalog endpoint (CHIME/FRB Catalog 1, JSON format)
-CHIME_API_URLS = [
-    "https://www.chime-frb.ca/api/1/sources/?format=json&page_size=1000",
-    "https://www.chime-frb.ca/api/1/sources/",
-]
-
-# Fallback: direct CSV download (mirrored by open-data project)
-CHIME_CSV_URL = "https://raw.githubusercontent.com/CHIMEFRB/frb-master/main/data/catalog1.csv"
-
-# TNS name pattern: "FRB YYYYMMDDX" or "FRB YYYYabc"
-_TNS_SPACE_RE = re.compile(r"\s+")
-
-
-def _normalize_oid(tns_name: str) -> str:
-    """
-    Normalize a TNS name to a compact OID string.
-    "FRB 20121102A" → "FRB20121102a"
-    "FRB 2020xyz"   → "FRB2020xyz"
-    """
-    oid = _TNS_SPACE_RE.sub("", tns_name)  # strip spaces
-    return oid[:-1] + oid[-1].lower() if oid and oid[-1].isupper() else oid.lower() if len(oid) <= 4 else oid[:3] + oid[3:].lower()
+# CDS VizieR: CHIME/FRB Catalog 1 (CHIME/FRB Collaboration 2021, ApJS 257, 59)
+VIZIER_URL = (
+    "https://vizier.cds.unistra.fr/viz-bin/votable"
+    "?-source=J/ApJS/257/59/table2&-out.all&-out.max=unlimited"
+)
 
 
 def _mjd_to_datetime(mjd: float) -> datetime:
+    from astropy.time import Time
     return Time(mjd, format="mjd").to_datetime(timezone=timezone.utc)
 
 
@@ -62,14 +47,14 @@ class ChimeFRBIngestionService:
 
     async def ingest(self, session: AsyncSession) -> int:
         """
-        Fetch CHIME/FRB catalog and upsert into the objects table.
+        Fetch CHIME/FRB catalog from VizieR and upsert into the objects table.
 
         Returns:
             Number of FRBs ingested (0 on failure).
         """
         log_entry = IngestionLog(
             source="chimefrb_catalog",
-            query_params={"catalog": "CHIME/FRB Catalog 1"},
+            query_params={"catalog": "CHIME/FRB Catalog 1 via VizieR"},
         )
         session.add(log_entry)
         await session.flush()
@@ -85,8 +70,7 @@ class ChimeFRBIngestionService:
 
             count = 0
             for frb in frbs:
-                ingested = await self._upsert_frb(session, frb)
-                if ingested:
+                if await self._upsert_frb(session, frb):
                     count += 1
 
             await session.flush()
@@ -96,7 +80,7 @@ class ChimeFRBIngestionService:
             log_entry.completed_at = datetime.now(timezone.utc)
             await session.commit()
 
-            logger.info(f"CHIME/FRB ingestion complete: {count} FRBs upserted")
+            logger.info("CHIME/FRB ingestion complete: %d FRBs upserted", count)
             return count
 
         except Exception as e:
@@ -104,87 +88,65 @@ class ChimeFRBIngestionService:
             log_entry.error_message = str(e)
             log_entry.completed_at = datetime.now(timezone.utc)
             await session.commit()
-            logger.error(f"CHIME/FRB ingestion failed: {e}", exc_info=True)
+            logger.error("CHIME/FRB ingestion failed: %s", e, exc_info=True)
             return 0
 
     async def _fetch_catalog(self) -> list[dict]:
-        """Try each known endpoint; return parsed list or empty list."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Try JSON API endpoints
-            for url in CHIME_API_URLS:
-                try:
-                    resp = await client.get(url, follow_redirects=True)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        # API may return {"results": [...]} or a plain list
-                        if isinstance(data, list):
-                            logger.info(f"Fetched {len(data)} FRBs from {url}")
-                            return data
-                        if isinstance(data, dict):
-                            results = data.get("results") or data.get("sources") or data.get("frbs") or []
-                            if results:
-                                logger.info(f"Fetched {len(results)} FRBs from {url}")
-                                return results
-                except Exception as e:
-                    logger.warning(f"CHIME API {url} failed: {e}")
+        """
+        Fetch CHIME/FRB Catalog 1 from VizieR as a VOTable and parse it.
 
-            # Fallback: CSV
-            try:
-                resp = await client.get(CHIME_CSV_URL, follow_redirects=True)
-                if resp.status_code == 200:
-                    return self._parse_csv(resp.text)
-            except Exception as e:
-                logger.warning(f"CHIME CSV fallback failed: {e}")
+        Returns a list of row dicts with keys: Name, RAJ2000, DEJ2000, DM, MJD400.
+        Returns an empty list if VizieR is unreachable or the response is invalid.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(VIZIER_URL, follow_redirects=True)
+                resp.raise_for_status()
+                votable_bytes = resp.content
+        except Exception as e:
+            logger.error("CHIME/FRB VizieR fetch failed: %s", e)
+            return []
 
-        logger.error("CHIME/FRB catalog unreachable from all sources; returning 0 FRBs")
-        return []
+        try:
+            table = parse_single_table(io.BytesIO(votable_bytes))
+            df = table.to_table().to_pandas()
+        except Exception as e:
+            logger.error("CHIME/FRB VOTable parse failed: %s", e)
+            return []
 
-    def _parse_csv(self, csv_text: str) -> list[dict]:
-        """Parse the CHIME catalog CSV into a list of dicts."""
-        import csv
-        import io
-
-        reader = csv.DictReader(io.StringIO(csv_text))
-        rows = []
-        for row in reader:
-            rows.append(row)
-        logger.info(f"Parsed {len(rows)} FRBs from CHIME CSV")
+        rows = df.to_dict(orient="records")
+        logger.info("Fetched %d FRBs from VizieR (CHIME/FRB Catalog 1)", len(rows))
         return rows
 
-    def _extract_fields(self, frb: dict) -> Optional[dict]:
+    def _extract_fields(self, row: dict) -> Optional[dict]:
         """
-        Extract and validate fields from a raw CHIME catalog entry.
+        Extract and validate fields from a VizieR VOTable row.
 
-        Handles both JSON API responses and CSV-parsed dicts.
-        Returns None if mandatory fields are missing.
+        VizieR column names: Name, RAJ2000, DEJ2000, DM, MJD400.
+        Returns None if mandatory fields are missing or invalid.
         """
-        # TNS name / OID
-        tns_name = (
-            frb.get("tns_name")
-            or frb.get("frb_name")
-            or frb.get("name")
-            or frb.get("id")
-        )
-        if not tns_name:
+        # TNS name → OID
+        tns_name = row.get("Name")
+        if not tns_name or str(tns_name).strip() in ("", "nan"):
             return None
 
-        oid = _normalize_oid(str(tns_name))
-        if not oid.startswith("FRB"):
-            oid = f"FRB{oid}"
+        tns_name = str(tns_name).strip()
+        # VizieR Name column: "FRB20180725A" — already compact, no spaces
+        oid = tns_name if tns_name.startswith("FRB") else f"FRB{tns_name}"
 
         # Position
         try:
-            ra = float(frb.get("ra") or frb.get("ra_deg") or 0)
-            dec = float(frb.get("dec") or frb.get("dec_deg") or 0)
-        except (TypeError, ValueError):
+            ra = float(row["RAJ2000"])
+            dec = float(row["DEJ2000"])
+        except (KeyError, TypeError, ValueError):
             return None
 
         if ra == 0.0 and dec == 0.0:
-            return None  # Invalid coordinates
+            return None
 
         # Dispersion measure
-        dm_raw = frb.get("bonsai_dm") or frb.get("dm") or frb.get("dispersion_measure")
         dm = None
+        dm_raw = row.get("DM")
         if dm_raw is not None:
             try:
                 dm = float(dm_raw)
@@ -192,9 +154,9 @@ class ChimeFRBIngestionService:
                 pass
 
         # Detection time (MJD at 400 MHz)
-        mjd_raw = frb.get("mjd_400") or frb.get("mjd") or frb.get("detection_mjd")
-        detection_time = None
         mjd = None
+        detection_time = None
+        mjd_raw = row.get("MJD400")
         if mjd_raw is not None:
             try:
                 mjd = float(mjd_raw)
@@ -211,9 +173,9 @@ class ChimeFRBIngestionService:
             "detection_time": detection_time,
         }
 
-    async def _upsert_frb(self, session: AsyncSession, frb: dict) -> bool:
+    async def _upsert_frb(self, session: AsyncSession, row: dict) -> bool:
         """Insert or update one FRB record. Returns True if successful."""
-        fields = self._extract_fields(frb)
+        fields = self._extract_fields(row)
         if fields is None:
             return False
 
@@ -243,7 +205,6 @@ class ChimeFRBIngestionService:
         )
         await session.execute(stmt)
 
-        # Update PostGIS position
         await session.execute(
             text(
                 "UPDATE objects SET position = ST_SetSRID(ST_MakePoint(:ra, :dec), 4326)::geography "
@@ -252,12 +213,11 @@ class ChimeFRBIngestionService:
             {"ra": ra, "dec": dec, "oid": oid},
         )
 
-        # Store detection record if we have a time
-        if fields["mjd"] and fields["detection_time"]:
+        if fields["mjd"] and detection_time:
             det_stmt = pg_insert(Detection).values(
                 oid=oid,
                 mjd=fields["mjd"],
-                detection_time=fields["detection_time"],
+                detection_time=detection_time,
             ).on_conflict_do_nothing()
             try:
                 await session.execute(det_stmt)
