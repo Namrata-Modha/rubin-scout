@@ -141,8 +141,8 @@ class ChimeFRBIngestionService:
 
     def _parse_csv(self, csv_text: str) -> list[dict]:
         """Parse the CHIME catalog CSV into a list of dicts."""
-        import io
         import csv
+        import io
 
         reader = csv.DictReader(io.StringIO(csv_text))
         rows = []
@@ -233,7 +233,7 @@ class ChimeFRBIngestionService:
             classification_probability=1.0,
             dispersion_measure=fields["dispersion_measure"],
             broker_source="chimefrb",
-            alert_url=f"https://www.chime-frb.ca/catalog",
+            alert_url="https://www.chime-frb.ca/catalog",
         ).on_conflict_do_update(
             index_elements=["oid"],
             set_={
