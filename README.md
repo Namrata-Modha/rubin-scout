@@ -130,14 +130,10 @@ If you use Rubin Scout data in research, cite the upstream sources:
 - SIMBAD: Wenger et al. (2000), A&AS, 143, 9
 
 ---
+<h5>Unlike primary brokers, Rubin Scout is a lightweight downstream aggregator - it consumes ALeRCE and TNS APIs rather than raw telescope streams, and embeds visibility planning directly alongside the alert data so researchers don’t need a separate TOM instance.</h5>
 
-*Rubin Scout is an independent open-source project and is not 
-affiliated with the Vera C. Rubin Observatory or the LSST project.*
+*Rubin Scout is an independent open-source project and is not affiliated with the Vera C. Rubin Observatory or the LSST project.*
 
----
-
----
-Unlike primary brokers, Rubin Scout is a lightweight downstream aggregator - it consumes ALeRCE and TNS APIs rather than raw telescope streams, and embeds visibility planning directly alongside the alert data so researchers don’t need a separate TOM instance.
 ---
 
 ## License
