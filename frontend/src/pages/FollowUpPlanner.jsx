@@ -5,42 +5,22 @@
  * ZTF transient history, SIMBAD cross-match, GW coincidences, and
  * observatory visibility for tonight — all via GET /api/ilmt/followup.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Target, Search, Eye, EyeOff, Moon, ExternalLink, Copy, Check } from "lucide-react";
 import ClassBadge from "../components/ClassBadge";
 import { getObservatories, getIlmtFollowup } from "../lib/api";
+import { formatUTC, formatDate } from "../lib/cosmos";
 
-// Use the Render backend URL in the reproducible curl command so researchers
+// Render backend URL used in the reproducible curl command so researchers
 // can copy-paste it into their own scripts outside the browser.
 const API_BASE =
   import.meta.env.VITE_API_URL || "https://rubin-scout-api.onrender.com";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// Sentinel value for the "custom coordinates" observatory option
+const CUSTOM_KEY = "custom";
 
-function formatUTC(isoStr) {
-  if (!isoStr) return "—";
-  try {
-    // "Mon, 19 May 2026 22:10:00 GMT" → slice to "22:10 UTC"
-    return new Date(isoStr).toUTCString().slice(17, 22) + " UTC";
-  } catch {
-    return isoStr;
-  }
-}
-
-function formatDate(isoStr) {
-  if (!isoStr) return "—";
-  try {
-    return new Date(isoStr).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return isoStr;
-  }
-}
+// Stable reference — avoids reallocating the array on every render
+const SKELETON_ITEMS = [0, 1, 2, 3];
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -384,7 +364,7 @@ export default function FollowUpPlanner() {
       .catch(() => {}); // silently degrade; presets are optional
   }, []);
 
-  const isCustom = form.observatory_key === "custom";
+  const isCustom = form.observatory_key === CUSTOM_KEY;
 
   function updateForm(field, val) {
     setForm((prev) => ({ ...prev, [field]: val }));
@@ -417,40 +397,39 @@ export default function FollowUpPlanner() {
     }
   }
 
-  // Build reproducible curl command from the query params actually sent
-  const curlUrl = result
-    ? (() => {
-        const p = new URLSearchParams({
-          ra: result.query.ra,
-          dec: result.query.dec,
-          mjd: result.query.mjd,
-          radius_arcsec: result.query.radius_arcsec,
-        });
-        if (form.observatory_key && form.observatory_key !== "custom")
-          p.set("observatory_key", form.observatory_key);
-        if (isCustom) {
-          if (form.obs_lat) p.set("obs_lat", form.obs_lat);
-          if (form.obs_lon) p.set("obs_lon", form.obs_lon);
-          if (form.obs_elevation) p.set("obs_elevation", form.obs_elevation);
-        }
-        return `${API_BASE}/api/ilmt/followup?${p}`;
-      })()
-    : "";
+  const curlUrl = useMemo(() => {
+    if (!result) return "";
+    const p = new URLSearchParams({
+      ra: result.query.ra,
+      dec: result.query.dec,
+      mjd: result.query.mjd,
+      radius_arcsec: result.query.radius_arcsec,
+    });
+    if (form.observatory_key && form.observatory_key !== CUSTOM_KEY)
+      p.set("observatory_key", form.observatory_key);
+    if (isCustom) {
+      if (form.obs_lat) p.set("obs_lat", form.obs_lat);
+      if (form.obs_lon) p.set("obs_lon", form.obs_lon);
+      if (form.obs_elevation) p.set("obs_elevation", form.obs_elevation);
+    }
+    return `${API_BASE}/api/ilmt/followup?${p}`;
+  }, [result, form, isCustom]);
 
+  // Store the timeout ID so we can cancel it if the component unmounts early
+  const copiedTimerRef = useRef(null);
   function copyCmd() {
     navigator.clipboard.writeText(`curl "${curlUrl}"`).catch(() => {});
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
   }
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
 
-  // Display name for the selected observatory
-  const obsDisplayName = isCustom
-    ? "Custom location"
-    : (presets[form.observatory_key]?.name ?? form.observatory_key);
-
-  // Use the name the backend resolved (includes "Custom location" fallback)
+  // Backend returns the resolved name; fall back to the form selection for
+  // the pre-result state (observatory label shown before first query).
   const visObsName =
-    result?.visibility_devasthal?.observatory_name ?? obsDisplayName;
+    result?.visibility_devasthal?.observatory_name ??
+    (isCustom ? "Custom location" : presets[form.observatory_key]?.name ?? form.observatory_key);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -564,7 +543,7 @@ export default function FollowUpPlanner() {
                 {obs.name} — {obs.location}
               </option>
             ))}
-            <option value="custom">Custom coordinates…</option>
+            <option value={CUSTOM_KEY}>Custom coordinates…</option>
           </select>
         </div>
 
@@ -645,7 +624,7 @@ export default function FollowUpPlanner() {
         <div className="space-y-4 animate-pulse">
           <div className="h-20 bg-white/[0.04] rounded-xl" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {[0, 1, 2, 3].map((i) => (
+            {SKELETON_ITEMS.map((i) => (
               <div key={i} className="h-52 bg-white/[0.04] rounded-xl" />
             ))}
           </div>

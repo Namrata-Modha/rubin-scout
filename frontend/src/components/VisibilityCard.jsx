@@ -12,16 +12,10 @@ import {
 } from "recharts";
 import { Eye, EyeOff, ChevronDown, Moon } from "lucide-react";
 import { getVisibility, getObservatories } from "../lib/api";
+import { formatUTC } from "../lib/cosmos";
 
 const DEFAULT_PRESET_KEY = "devasthal";
 
-function formatHour(isoString) {
-  try {
-    return new Date(isoString).toUTCString().slice(17, 22) + " UTC";
-  } catch {
-    return isoString;
-  }
-}
 
 function CustomDot({ cx, cy, payload }) {
   const color = payload.altitude > 30 ? "#51cf66" : "#ff6b6b";
@@ -34,7 +28,7 @@ function CustomTooltip({ active, payload }) {
   if (!d) return null;
   return (
     <div className="bg-black/80 border border-white/10 rounded-lg px-3 py-2 text-xs">
-      <p className="text-white/60">{formatHour(d.time)}</p>
+      <p className="text-white/60">{formatUTC(d.time)}</p>
       <p style={{ color: d.altitude > 30 ? "#51cf66" : "#ff6b6b" }}>
         Altitude: {d.altitude.toFixed(1)}°
       </p>
@@ -272,7 +266,7 @@ export default function VisibilityCard({ oid }) {
                 <span>Peak altitude: <span className="text-white/60">{data.max_altitude}°</span></span>
                 {data.dark_start && (
                   <span>
-                    Dark window: {formatHour(data.dark_start)} – {formatHour(data.dark_end)}
+                    Dark window: {formatUTC(data.dark_start)} – {formatUTC(data.dark_end)}
                   </span>
                 )}
               </div>
@@ -287,7 +281,7 @@ export default function VisibilityCard({ oid }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                     <XAxis
                       dataKey="time"
-                      tickFormatter={(v) => formatHour(v).slice(0, 5)}
+                      tickFormatter={(v) => formatUTC(v).slice(0, 5)}
                       tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }}
                       interval={3}
                     />

@@ -194,6 +194,36 @@ export function formatFirstSeen(isoString) {
 }
 
 /**
+ * Format an ISO timestamp as "HH:MM UTC".
+ * Returns "—" for falsy input.
+ */
+export function formatUTC(isoStr) {
+  if (!isoStr) return "—";
+  try {
+    return new Date(isoStr).toUTCString().slice(17, 22) + " UTC";
+  } catch {
+    return isoStr;
+  }
+}
+
+/**
+ * Format an ISO timestamp as a short calendar date, e.g. "May 19, 2026".
+ * Returns "—" for falsy input.
+ */
+export function formatDate(isoStr) {
+  if (!isoStr) return "—";
+  try {
+    return new Date(isoStr).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return isoStr;
+  }
+}
+
+/**
  * Generate a one-line human summary for an alert.
  */
 export function getAlertSummary(alert) {
