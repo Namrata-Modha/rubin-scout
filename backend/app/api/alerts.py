@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 iers.conf.auto_download = False
 iers.conf.auto_max_age = None
 
-from app.database import get_db
-from app.enrichment.crossmatch import EnrichmentService # noqa: E402
-from app.models.models import ClassificationProbability, Detection, GWEvent, Object
-from app.security import limiter
-from app.utils.observatories import OBSERVATORY_PRESETS
-from app.validation import validate_classification, validate_oid
+from app.database import get_db  # noqa: E402
+from app.enrichment.crossmatch import EnrichmentService  # noqa: E402
+from app.models.models import ClassificationProbability, Detection, GWEvent, Object  # noqa: E402
+from app.security import limiter  # noqa: E402
+from app.utils.observatories import OBSERVATORY_PRESETS  # noqa: E402
+from app.validation import validate_classification, validate_oid  # noqa: E402
 
 # MJD epoch (1858-11-17 00:00:00 UTC) — used for MJD↔datetime conversion
 # without triggering astropy IERS or UT1 lookups.
