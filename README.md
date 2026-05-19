@@ -52,6 +52,7 @@ GET /api/alerts/recent          Paginated alert list with filters
 GET /api/alerts/{oid}           Full object detail + light curve + probabilities
 GET /api/alerts/{oid}/visibility Observatory visibility computation
 GET /api/alerts/conesearch/query PostGIS cone search (ra, dec, radius_arcsec)
+GET /api/ilmt/followup          ILMT follow-up planner (ZTF history, SIMBAD, GW coincidence, Devasthal visibility, recommendation)
 GET /api/observatories          Observatory preset list
 GET /api/gw/events              All GW events with candidate counts
 GET /api/health/ping            Keep-alive / uptime check
@@ -121,6 +122,13 @@ rubin-scout/
 ---
 
 ## Attribution
+
+If you use Rubin Scout data in research, cite the upstream sources:
+
+- ALeRCE: Förster et al. (2021), AJ, 161, 242
+- ZTF: Bellm et al. (2019), PASP, 131, 018002
+- GWTC events: per-event citations specified by the LVK collaboration at gwosc.org
+- SIMBAD: Wenger et al. (2000), A&AS, 143, 9
 
 If you use Rubin Scout data in research, cite the upstream sources:
 
