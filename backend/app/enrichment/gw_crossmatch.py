@@ -149,6 +149,8 @@ async def fetch_gwosc_events() -> list[dict]:
             evt.get("mass_1_source"), evt.get("mass_2_source")
         )
 
+        mass_1 = evt.get("mass_1_source")
+        mass_2 = evt.get("mass_2_source")
         properties = {
             # Flat catalog provides no sky localisation
             "ra_center": None,
@@ -156,6 +158,8 @@ async def fetch_gwosc_events() -> list[dict]:
             "area_90_deg2": None,
             "distance_mpc": float(dist) if dist is not None else None,
             "distance_err_mpc": None,
+            "mass_1_solar": float(mass_1) if mass_1 is not None else None,
+            "mass_2_solar": float(mass_2) if mass_2 is not None else None,
             "description": DESCRIPTIONS.get(common_name),
         }
 
@@ -172,6 +176,54 @@ async def fetch_gwosc_events() -> list[dict]:
         len(result), len(raw_events), skipped,
     )
     return result
+
+
+_TYPE_NOUN = {
+    "BBH": "binary black hole merger",
+    "BNS": "binary neutron star merger",
+    "NSBH": "neutron star–black hole merger",
+    "Terrestrial": "likely terrestrial event (false alarm)",
+}
+
+_COMPONENT_NOUN = {
+    "BBH": ("black hole", "black hole"),
+    "BNS": ("neutron star", "neutron star"),
+    "NSBH": ("black hole", "neutron star"),
+}
+
+
+def _auto_description(dominant_type: str, props: dict) -> str:
+    """
+    Generate a plain-English description for GW events that lack a hand-written
+    entry in DESCRIPTIONS.  Uses mass and distance from stored properties when
+    available; falls back to generic phrasing.
+    """
+    noun = _TYPE_NOUN.get(dominant_type, "gravitational wave event")
+
+    m1 = props.get("mass_1_solar")
+    m2 = props.get("mass_2_solar")
+    dist = props.get("distance_mpc")
+
+    # Article for the merger noun
+    article = "An" if noun[0] in "aeiou" else "A"
+
+    if m1 is not None and m2 is not None:
+        # Sort so heavier component is listed first
+        heavy, light = (m1, m2) if m1 >= m2 else (m2, m1)
+        nouns = _COMPONENT_NOUN.get(dominant_type, ("object", "object"))
+        mass_phrase = (
+            f"Two {nouns[0]}s of {heavy:.1f} and {light:.1f} solar masses merged"
+            if nouns[0] == nouns[1]
+            else f"A {heavy:.1f} solar-mass {nouns[0]} merged with a {light:.1f} solar-mass {nouns[1]}"
+        )
+        if dist is not None:
+            return f"{article} {noun}. {mass_phrase} {dist:.0f} Mpc away."
+        return f"{article} {noun}. {mass_phrase}."
+
+    if dist is not None:
+        return f"{article} {noun} detected {dist:.0f} Mpc away during a LIGO/Virgo/KAGRA observing run."
+
+    return f"{article} {noun} detected during a LIGO/Virgo/KAGRA observing run."
 
 
 class GWCrossMatchService:
@@ -403,7 +455,7 @@ class GWCrossMatchService:
                 "area_90_deg2": props.get("area_90_deg2"),
                 "distance_mpc": props.get("distance_mpc"),
                 "distance_err_mpc": props.get("distance_err_mpc"),
-                "description": props.get("description", ""),
+                "description": props.get("description") or _auto_description(dominant_type, props),
                 "n_candidates": n_candidates,
             })
 
