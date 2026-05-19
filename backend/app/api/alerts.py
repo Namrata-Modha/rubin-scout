@@ -493,17 +493,43 @@ async def ilmt_followup(
     dec: float = Query(..., ge=-90.0, le=90.0, description="Declination (degrees, J2000)"),
     mjd: float = Query(..., ge=40000.0, le=80000.0, description="Modified Julian Date of ILMT observation"),
     radius_arcsec: float = Query(5.0, ge=0.5, le=300.0, description="Cone-search radius in arcseconds"),
+    observatory_key: Optional[str] = Query(
+        None, max_length=50,
+        description="Observatory preset key from /api/observatories. "
+                    "Pass 'custom' and supply obs_lat/obs_lon/obs_elevation for a custom location. "
+                    "Defaults to Devasthal (ARIES/ILMT).",
+    ),
+    obs_lat: Optional[float] = Query(None, ge=-90.0, le=90.0, description="Custom observer latitude (degrees N)"),
+    obs_lon: Optional[float] = Query(None, ge=-180.0, le=180.0, description="Custom observer longitude (degrees E)"),
+    obs_elevation: float = Query(0.0, ge=-500.0, le=5000.0, description="Custom observer elevation (metres)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     ILMT follow-up planning for a sky position observed at a given epoch.
 
     Returns ZTF transient history, SIMBAD cross-match, gravitational wave
-    coincidences, Devasthal visibility for tonight, and a follow-up
-    recommendation for the ARIES/ILMT team.
+    coincidences, visibility for the requested observatory tonight, and a
+    follow-up recommendation for the ARIES/ILMT team.
+
+    The observatory defaults to Devasthal (ARIES/ILMT). Pass observatory_key
+    to use a different preset from /api/observatories, or observatory_key=custom
+    together with obs_lat, obs_lon, obs_elevation for a custom site.
     """
     query_dt = _mjd_to_datetime(mjd)
     radius_meters = radius_arcsec * 30.87  # 1 arcsec ≈ 30.87 m on the geoid
+
+    # Resolve the observatory for visibility computation
+    if observatory_key and observatory_key != "custom" and observatory_key in OBSERVATORY_PRESETS:
+        _obs = OBSERVATORY_PRESETS[observatory_key]
+        vis_lat, vis_lon, vis_elevation = _obs["lat"], _obs["lon"], _obs["elevation_m"]
+        vis_observatory_name = _obs["name"]
+    elif observatory_key == "custom" and obs_lat is not None and obs_lon is not None:
+        vis_lat, vis_lon, vis_elevation = obs_lat, obs_lon, obs_elevation
+        vis_observatory_name = "Custom location"
+    else:
+        _devasthal = OBSERVATORY_PRESETS["devasthal"]
+        vis_lat, vis_lon, vis_elevation = _devasthal["lat"], _devasthal["lon"], _devasthal["elevation_m"]
+        vis_observatory_name = _devasthal["name"]
 
     # ------------------------------------------------------------------
     # 1. ZTF history — spatial cone search on the objects table
@@ -555,7 +581,6 @@ async def ilmt_followup(
     # 2 & 4. SIMBAD cross-match + Devasthal visibility — run concurrently
     # ------------------------------------------------------------------
     enrichment = EnrichmentService()
-    devasthal = OBSERVATORY_PRESETS["devasthal"]
 
     simbad_task = asyncio.to_thread(
         enrichment._query_simbad, ra, dec, max(radius_arcsec, 10.0)
@@ -563,7 +588,7 @@ async def ilmt_followup(
     visibility_task = asyncio.to_thread(
         _compute_visibility,
         ra, dec,
-        devasthal["lat"], devasthal["lon"], devasthal["elevation_m"],
+        vis_lat, vis_lon, vis_elevation,
         None,  # tonight
     )
 
@@ -580,6 +605,7 @@ async def ilmt_followup(
 
     # Strip the verbose hourly array from visibility — callers only need the summary
     visibility_devasthal = {
+        "observatory_name": vis_observatory_name,
         "observable": vis_full.get("observable"),
         "max_altitude": vis_full.get("max_altitude"),
         "dark_start": vis_full.get("dark_start"),

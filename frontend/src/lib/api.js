@@ -91,3 +91,37 @@ export async function getVisibility(oid, { lat, lon, elevation = 0, date = null 
   if (date) params.set("date", date);
   return fetchJSON(`/alerts/${oid}/visibility?${params}`);
 }
+
+/**
+ * ILMT follow-up planner — returns ZTF history, SIMBAD cross-match, GW
+ * coincidences, observatory visibility, and a follow-up recommendation.
+ *
+ * @param {object} opts
+ * @param {number} opts.ra - Right Ascension in degrees
+ * @param {number} opts.dec - Declination in degrees
+ * @param {number} opts.mjd - Modified Julian Date of observation
+ * @param {number} [opts.radiusArcsec=5.0] - Cone-search radius in arcseconds
+ * @param {string} [opts.observatoryKey] - Preset key from /api/observatories, or "custom"
+ * @param {number} [opts.obsLat] - Custom observer latitude (required when observatoryKey="custom")
+ * @param {number} [opts.obsLon] - Custom observer longitude (required when observatoryKey="custom")
+ * @param {number} [opts.obsElevation=0] - Custom observer elevation in metres
+ */
+export async function getIlmtFollowup({
+  ra,
+  dec,
+  mjd,
+  radiusArcsec = 5.0,
+  observatoryKey = null,
+  obsLat = null,
+  obsLon = null,
+  obsElevation = 0,
+} = {}) {
+  const params = new URLSearchParams({ ra, dec, mjd, radius_arcsec: radiusArcsec });
+  if (observatoryKey) params.set("observatory_key", observatoryKey);
+  if (observatoryKey === "custom") {
+    if (obsLat != null) params.set("obs_lat", obsLat);
+    if (obsLon != null) params.set("obs_lon", obsLon);
+    params.set("obs_elevation", obsElevation);
+  }
+  return fetchJSON(`/ilmt/followup?${params}`);
+}
