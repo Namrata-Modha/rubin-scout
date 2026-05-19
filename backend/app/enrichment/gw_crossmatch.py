@@ -63,10 +63,40 @@ DESCRIPTIONS = {
 }
 
 
+def _classify_from_masses(mass_1: float | None, mass_2: float | None) -> dict:
+    """
+    Infer merger type from component masses (solar masses).
+
+    GWOSC's flat catalog does not provide a classification probability dict —
+    it only exposes mass_1_source and mass_2_source.  We use the conventional
+    3 M☉ boundary between neutron stars and black holes:
+
+        mass_2 < 3:
+            mass_1 > 5  →  NSBH  (black hole swallowing a neutron star)
+            else        →  BNS   (both components are neutron stars)
+        else            →  BBH   (both components are black holes)
+
+    Returns a dict in the same shape as GWEvent.classification, e.g.
+    {"BBH": 1.0} so downstream code can call max(cls, key=cls.get) safely.
+    """
+    if mass_1 is None or mass_2 is None:
+        return {"BBH": 1.0}  # safe default; most GWTC events are BBH
+    # Ensure mass_2 is the lighter component
+    m1, m2 = max(mass_1, mass_2), min(mass_1, mass_2)
+    if m2 < 3.0:
+        return {"NSBH": 1.0} if m1 > 5.0 else {"BNS": 1.0}
+    return {"BBH": 1.0}
+
+
 async def fetch_gwosc_events() -> list[dict]:
     """
     Fetch all public GW events from the GWOSC catalog API.
 
+    The API response shape is:
+        {"events": {"GW...-v1": {commonName, GPS, far, luminosity_distance,
+                                  mass_1_source, mass_2_source, ...}, ...}}
+
+    Deduplicates by commonName, keeping the highest version number.
     Returns a list of dicts ready to be upserted into the GWEvent table.
     Returns an empty list if GWOSC is unreachable.
     """
@@ -76,13 +106,18 @@ async def fetch_gwosc_events() -> list[dict]:
             response.raise_for_status()
             data = response.json()
     except Exception as e:
-        logger.error(f"Failed to fetch GWOSC events: {e}")
+        logger.error("Failed to fetch GWOSC events: %s", e)
         return []
 
-    # The API returns a dict keyed by "{commonName}-v{N}" version strings.
+    raw_events: dict = data.get("events", {})
+    if not raw_events:
+        logger.warning("GWOSC response contained no 'events' key or empty events dict")
+        return []
+
     # Deduplicate by commonName, keeping the highest version number.
+    # Each key is "{commonName}-v{N}"; each value is a flat event dict.
     events_by_name: dict[str, dict] = {}
-    for version_key, evt in data.items():
+    for _version_key, evt in raw_events.items():
         common_name = evt.get("commonName")
         if not common_name:
             continue
@@ -91,41 +126,51 @@ async def fetch_gwosc_events() -> list[dict]:
             events_by_name[common_name] = evt
 
     result = []
+    skipped = 0
     for common_name, evt in events_by_name.items():
         gps = evt.get("GPS")
         if gps is None:
+            skipped += 1
             continue
 
         try:
             event_time = Time(float(gps), format="gps").to_datetime(timezone=timezone.utc)
         except Exception as e:
-            logger.warning(f"Could not convert GPS {gps} for {common_name}: {e}")
+            logger.warning("Could not convert GPS %s for %s: %s", gps, common_name, e)
+            skipped += 1
             continue
 
         far = evt.get("far")
-
         dist = evt.get("luminosity_distance")
-        evt.get("luminosity_distance_unit", "Mpc")
+
+        # Classification inferred from masses — p_astro is a single float in
+        # the flat catalog, not a classification dict, so we cannot use it.
+        classification = _classify_from_masses(
+            evt.get("mass_1_source"), evt.get("mass_2_source")
+        )
 
         properties = {
+            # Flat catalog provides no sky localisation
             "ra_center": None,
             "dec_center": None,
             "area_90_deg2": None,
             "distance_mpc": float(dist) if dist is not None else None,
             "distance_err_mpc": None,
             "description": DESCRIPTIONS.get(common_name),
-            "catalog": evt.get("catalog.shortName"),
         }
 
         result.append({
             "superevent_id": common_name,
             "event_time": event_time,
             "far": float(far) if far is not None else None,
-            "classification": {},
+            "classification": classification,
             "properties": properties,
         })
 
-    logger.info(f"Fetched {len(result)} GW events from GWOSC")
+    logger.info(
+        "Fetched %d GW events from GWOSC (%d raw entries, %d skipped)",
+        len(result), len(raw_events), skipped,
+    )
     return result
 
 
