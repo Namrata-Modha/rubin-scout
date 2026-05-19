@@ -14,7 +14,7 @@ falls back to angular distance matching.
 
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 
 import httpx
 from astropy.time import Time
