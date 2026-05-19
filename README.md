@@ -136,6 +136,10 @@ affiliated with the Vera C. Rubin Observatory or the LSST project.*
 
 ---
 
+---
+Unlike primary brokers, Rubin Scout is a lightweight downstream aggregator - it consumes ALeRCE and TNS APIs rather than raw telescope streams, and embeds visibility planning directly alongside the alert data so researchers don’t need a separate TOM instance.
+---
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
