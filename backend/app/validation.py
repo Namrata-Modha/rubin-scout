@@ -55,8 +55,11 @@ OID_PATTERN = re.compile(
     r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|TDE)\d{4}[a-z]{1,8}|FRB\d{4,8}[a-z]{0,8}|FRB\d{8}[A-Z]{1,2})$"
 )
 
-# GW superevent IDs: "GW" or "S" followed by digits and optional letter
-GW_EVENT_PATTERN = re.compile(r"^(GW|S)\d{6}[a-z]?$")
+# GW superevent IDs — two formats:
+#   Classic:  GW170817, GW190521      (no underscore)
+#   Modern:   GW250207_115645         (O3/O4 style: 6-digit date + _ + 6-digit UTC time)
+# Also accepts LIGO alert IDs starting with "S" (e.g. S190814bv)
+GW_EVENT_PATTERN = re.compile(r"^(GW\d{6}(_\d{6})?|S\d{6}[a-z]?)$")
 
 # Loose email validation (Pydantic EmailStr is better but this is a fallback)
 EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
