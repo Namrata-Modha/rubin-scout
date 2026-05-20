@@ -55,11 +55,16 @@ OID_PATTERN = re.compile(
     r"^(ZTF\d{2}[a-z]{7,10}|(AT|SN|TDE)\d{4}[a-z]{1,8}|FRB\d{4,8}[a-z]{0,8}|FRB\d{8}[A-Z]{1,2})$"
 )
 
-# GW superevent IDs — two formats:
-#   Classic:  GW170817, GW190521      (no underscore)
-#   Modern:   GW250207_115645         (O3/O4 style: 6-digit date + _ + 6-digit UTC time)
-# Also accepts LIGO alert IDs starting with "S" (e.g. S190814bv)
-GW_EVENT_PATTERN = re.compile(r"^(GW\d{6}(_\d{6})?|S\d{6}[a-z]?)$")
+# GW superevent / catalog IDs from GWOSC.
+# GWOSC uses many ID schemes across catalogs:
+#   GW170817, GW190521, GW250207_115645   standard GW prefix
+#   S190814bv                              LIGO alert IDs
+#   161202, 170705                         bare date-only IDs (GWTC-1)
+#   151012.2                               dot-suffixed variants
+#   blind_injection, GRB051103             special entries
+# All come directly from GWOSC so no format restriction is needed;
+# just guard length and reject shell-injection characters.
+GW_EVENT_PATTERN = re.compile(r"^[\w.\-]{1,40}$")
 
 # Loose email validation (Pydantic EmailStr is better but this is a fallback)
 EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
@@ -94,12 +99,19 @@ def validate_oid(oid: str) -> str:
 
 
 def validate_superevent_id(superevent_id: str) -> str:
-    """Validate a GW superevent ID."""
+    """
+    Validate a GW superevent / catalog ID from GWOSC.
+
+    Accepts any alphanumeric string with dots, underscores, and hyphens
+    up to 40 characters.  No prefix format is enforced because GWOSC
+    uses many ID schemes across catalogs (GW*, S*, bare dates, GRB*, etc.).
+    """
     superevent_id = superevent_id.strip()
-    if len(superevent_id) > 20:
-        raise ValueError("Superevent ID too long")
     if not GW_EVENT_PATTERN.match(superevent_id):
-        raise ValueError(f"Invalid superevent ID format: {superevent_id}")
+        raise ValueError(
+            f"Invalid superevent ID: {superevent_id!r}. "
+            "Must be 1–40 alphanumeric characters, dots, underscores, or hyphens."
+        )
     return superevent_id
 
 
