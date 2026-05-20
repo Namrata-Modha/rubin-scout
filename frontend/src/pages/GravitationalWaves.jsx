@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Waves, Search, Loader2, ExternalLink, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Waves, Search, Loader2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { getGWEvents, crossMatchGWEvent, seedGWEvents } from "../lib/api";
 import { getClassInfo } from "../lib/cosmos";
 
@@ -24,6 +24,7 @@ export default function GravitationalWaves() {
   const [searching, setSearching] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+  const listTopRef = useRef(null);
 
   useEffect(() => {
     async function load() {
@@ -46,6 +47,10 @@ export default function GravitationalWaves() {
       }
     }
     load();
+    // Scroll to top of the events list on every page change (skip on first load)
+    if (page > 1) {
+      listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }, [page]);
 
   const handleCrossMatch = async (supereventId) => {
@@ -112,7 +117,7 @@ export default function GravitationalWaves() {
       )}
 
       {/* Event cards */}
-      <div className="space-y-3">
+      <div ref={listTopRef} className="space-y-3">
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <Loader2 className="w-5 h-5 text-white/30 animate-spin" />
@@ -292,8 +297,8 @@ export default function GravitationalWaves() {
         </div>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
+      {/* Pagination — only shown after data loads */}
+      {total > 0 && (
         <div className="flex items-center justify-center gap-2 pt-2 pb-4">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -346,7 +351,7 @@ export default function GravitationalWaves() {
           </button>
 
           <span className="text-[10px] text-white/20 ml-3">
-            {total} events total
+            Page {page} of {totalPages}
           </span>
         </div>
       )}
