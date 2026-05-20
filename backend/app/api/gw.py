@@ -22,10 +22,17 @@ gw_service = GWCrossMatchService()
 
 @router.get("/events")
 @limiter.limit("60/minute")
-async def list_gw_events(request: Request, db: AsyncSession = Depends(get_db)):
-    """List all gravitational wave events with descriptions."""
-    events = await gw_service.get_all_events(db)
-    return {"count": len(events), "events": events}
+async def list_gw_events(
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """List gravitational wave events with pagination."""
+    all_events = await gw_service.get_all_events(db)
+    total = len(all_events)
+    page_events = all_events[offset : offset + limit]
+    return {"total": total, "limit": limit, "offset": offset, "events": page_events}
 
 
 @router.get("/events/{superevent_id}")
