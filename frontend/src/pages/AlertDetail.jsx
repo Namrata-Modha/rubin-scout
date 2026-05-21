@@ -4,6 +4,7 @@ import { ArrowLeft, ExternalLink, Sparkles } from "lucide-react";
 import LightCurveChart from "../components/LightCurveChart";
 import VisibilityCard from "../components/VisibilityCard";
 import ClassBadge from "../components/ClassBadge";
+import CosmicAnimation from "../components/CosmicAnimation";
 import { getAlertDetail } from "../lib/api";
 import {
   getClassInfo,
@@ -119,6 +120,9 @@ export default function AlertDetail() {
           )}
         </div>
       </div>
+
+      {/* Cosmic animation — looping canvas visual for this classification */}
+      <CosmicAnimation classification={obj.classification} />
 
       {/* TELESCOPE IMAGE - NEW SECTION */}
       <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-6">
