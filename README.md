@@ -60,6 +60,28 @@ GET /api/health/ping            Keep-alive / uptime check
 
 Full Swagger UI at `/api/docs` (development) and the live API docs link above.
 
+
+# Running Tests
+
+```bash
+cd backend
+pytest tests/ -v
+```
+
+## Run a specific test file
+
+```bash
+pytest tests/test_validation.py -v
+```
+
+## Run with coverage report
+
+```bash
+pytest tests/ --cov=app --cov-report=term-missing
+```
+
+Requirements: pytest and pytest-cov must be installed. Add both to requirements.txt if not already present.
+
 ---
 
 ## Tech Stack
