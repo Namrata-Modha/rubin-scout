@@ -152,13 +152,6 @@ If you use Rubin Scout data in research, cite the upstream sources:
 - GWTC events: per-event citations specified by the LVK collaboration at gwosc.org
 - SIMBAD: Wenger et al. (2000), A&AS, 143, 9
 
-If you use Rubin Scout data in research, cite the upstream sources:
-
-- ALeRCE: Förster et al. (2021), AJ, 161, 242
-- ZTF: Bellm et al. (2019), PASP, 131, 018002
-- GWTC events: per-event citations specified by the LVK collaboration at gwosc.org
-- SIMBAD: Wenger et al. (2000), A&AS, 143, 9
-
 ---
 <h5>Unlike primary brokers, Rubin Scout is a lightweight downstream aggregator - it consumes ALeRCE and TNS APIs rather than raw telescope streams, and embeds visibility planning directly alongside the alert data so researchers don’t need a separate TOM instance.</h5>
 

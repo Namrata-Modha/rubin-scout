@@ -81,6 +81,17 @@ Rubin Scout takes security seriously. If you're making changes:
 - Use parameterized queries only (SQLAlchemy ORM or `text()` with `:param`)
 - Run `ruff check app/` before committing
 
+## Running Tests
+
+```bash
+cd backend && pytest tests/ -v
+```
+
+For coverage:
+```bash
+pytest tests/ --cov=app --cov-report=term-missing
+```
+
 ## Code Style
 
 **Python:** Use `ruff` for linting and formatting. Type hints encouraged. Target Python 3.11+.
