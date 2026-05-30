@@ -178,15 +178,15 @@ export default function CelestialGlobe() {
   useEffect(() => {
     async function load() {
       const [alertsRes, gwRes, frbRes] = await Promise.all([
-        getRecentAlerts({ limit: 500, hours: 87600, minProbability: 0 }).catch((e) => {
+        getRecentAlerts({ limit: 100, hours: 87600, minProbability: 0 }).catch((e) => {
           console.warn("Transient fetch failed", e);
           return { alerts: [] };
         }),
-        getGWEvents({ limit: 265 }).catch((e) => {
+        getGWEvents({ limit: 100 }).catch((e) => {
           console.warn("GW fetch failed", e);
           return { events: [] };
         }),
-        getFRBEvents({ limit: 600 }).catch((e) => {
+        getFRBEvents({ limit: 100 }).catch((e) => {
           console.warn("FRB fetch failed", e);
           return { alerts: [] };
         }),
