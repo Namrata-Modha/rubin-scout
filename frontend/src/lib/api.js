@@ -80,6 +80,18 @@ export async function seedGWEvents() {
   return fetchJSON(`/gw/seed`, { method: "POST" });
 }
 
+/** Get FRB (Fast Radio Burst) alerts. */
+export async function getFRBEvents({ limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams({
+    classification: "FRB",
+    min_probability: 0,
+    hours: 87600,
+    limit,
+    offset,
+  });
+  return fetchJSON(`/alerts/recent?${params}`);
+}
+
 /** Get built-in observatory presets. */
 export async function getObservatories() {
   return fetchJSON(`/observatories`);
