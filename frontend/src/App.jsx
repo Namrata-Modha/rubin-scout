@@ -3,6 +3,7 @@ import Dashboard from "./pages/Dashboard";
 import AlertDetail from "./pages/AlertDetail";
 import GravitationalWaves from "./pages/GravitationalWaves";
 import FollowUpPlanner from "./pages/FollowUpPlanner";
+import GlobePage from "./pages/GlobePage";
 import Header from "./components/Header";
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/alert/:oid" element={<AlertDetail />} />
             <Route path="/gravitational-waves" element={<GravitationalWaves />} />
             <Route path="/followup" element={<FollowUpPlanner />} />
+            <Route path="/globe" element={<GlobePage />} />
           </Routes>
         </main>
       </div>
