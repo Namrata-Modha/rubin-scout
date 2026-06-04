@@ -296,7 +296,7 @@ export default function SkyMap({ alerts, onSelectAlert, page = 1, totalPages = 1
         const depth = Math.max(0, Math.min(1, 1 - (projV.z + 1) / 2));
         span.style.visibility = "visible";
         span.style.transform  = `translate(calc(${sx}px - 50%), calc(${sy}px - 50%))`;
-        span.style.fontSize   = Math.round(10 + depth * 9) + "px";
+        span.style.fontSize   = Math.round(20 + depth * 18) + "px";
         span.style.opacity    = String(0.4 + depth * 0.6);
       }
     };
