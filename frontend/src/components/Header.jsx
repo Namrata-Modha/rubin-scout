@@ -25,9 +25,6 @@ export default function Header() {
           <Link to="/followup" className="hover:text-white transition-colors">
             Follow-Up Planner
           </Link>
-          <Link to="/globe" className="hover:text-white transition-colors">
-            Globe
-          </Link>
           <a
             href={`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/docs`}
             target="_blank"

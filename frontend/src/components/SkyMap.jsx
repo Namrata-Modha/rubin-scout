@@ -1,294 +1,413 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
+import * as THREE from "three";
 import { getClassInfo, getConstellation } from "../lib/cosmos";
 
-function mollweideProject(raDeg, decDeg, w, h) {
-  let lon = raDeg > 180 ? raDeg - 360 : raDeg;
-  lon = -lon;
-  const lonRad = (lon * Math.PI) / 180;
-  const latRad = (decDeg * Math.PI) / 180;
-  let theta = latRad;
-  for (let i = 0; i < 10; i++) {
-    const d = -(theta + Math.sin(theta) - Math.PI * Math.sin(latRad)) / (1 + Math.cos(theta));
-    theta += d;
-    if (Math.abs(d) < 1e-6) break;
-  }
-  theta /= 2;
-  const x = ((2 * Math.SQRT2) / Math.PI) * lonRad * Math.cos(theta);
-  const y = Math.SQRT2 * Math.sin(theta);
-  const s = Math.min(w / (4 * Math.SQRT2), h / (2 * Math.SQRT2));
-  return { x: w / 2 + x * s * 0.95, y: h / 2 - y * s * 0.95 };
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function toXYZ(ra, dec, r) {
+  const rr = (ra * Math.PI) / 180;
+  const dr = (dec * Math.PI) / 180;
+  return {
+    x: r * Math.cos(dr) * Math.cos(rr),
+    y: r * Math.sin(dr),
+    z: r * Math.cos(dr) * Math.sin(rr),
+  };
 }
 
-function isInside(px, py, w, h) {
-  const s = Math.min(w / (4 * Math.SQRT2), h / (2 * Math.SQRT2));
-  const a = 2 * Math.SQRT2 * s * 0.95, b = Math.SQRT2 * s * 0.95;
-  return ((px - w/2)**2)/(a**2) + ((py - h/2)**2)/(b**2) <= 1;
+function rand(min, max) {
+  return min + Math.random() * (max - min);
 }
 
-function rng(seed) {
-  let s = seed;
-  return () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+function makeTex() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const ctx2 = c.getContext("2d");
+  const g = ctx2.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.5, "rgba(255,255,255,0.6)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx2.fillStyle = g;
+  ctx2.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(c);
 }
 
-function drawBackground(ctx, w, h) {
-  const rand = rng(42);
+// ── Component ────────────────────────────────────────────────────────────────
 
-  // Deep space gradient inside ellipse
-  const cx = w/2, cy = h/2;
-  const s = Math.min(w / (4 * Math.SQRT2), h / (2 * Math.SQRT2));
-  const a = 2 * Math.SQRT2 * s * 0.95;
-  const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, a);
-  bg.addColorStop(0, "#080e1e");
-  bg.addColorStop(0.7, "#060b18");
-  bg.addColorStop(1, "#040814");
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, w, h);
+export default function SkyMap({ alerts, onSelectAlert, page = 1, totalPages = 1, total }) {
+  const mountRef    = useRef(null);
+  const emojiRef    = useRef(null);
+  const interactRef = useRef(null);
 
-  // Stars
-  for (let i = 0; i < 3000; i++) {
-    const x = rand() * w, y = rand() * h;
-    if (!isInside(x, y, w, h)) continue;
-    const b = rand();
-    const size = b < 0.92 ? 0.3 : b < 0.98 ? 0.6 : 1.0;
-    const alpha = 0.15 + b * 0.5;  // Brighter stars
-    // Slight color variation: blue-white, warm-white, cool-blue
-    const temp = rand();
-    const r = temp < 0.3 ? 180 : temp < 0.6 ? 210 : 200;
-    const g = temp < 0.3 ? 195 : temp < 0.6 ? 215 : 200;
-    const bl = 255;
-    ctx.beginPath();
-    ctx.arc(x, y, size, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${r},${g},${bl},${alpha})`;
-    ctx.fill();
-  }
+  // Shared between the two effects via refs — no re-render on update
+  const eventsRef = useRef([]); // current 3D event objects
+  const spansRef  = useRef([]); // current emoji span elements
 
-  // Bright stars with soft glow
-  for (let i = 0; i < 25; i++) {
-    const x = rand() * w, y = rand() * h;
-    if (!isInside(x, y, w, h)) continue;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, 4 + rand() * 3);
-    g.addColorStop(0, `rgba(200,220,255,${0.5 + rand()*0.4})`);  // More visible glow
-    g.addColorStop(0.3, "rgba(180,200,255,0.08)");
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g;
-    ctx.fillRect(x - 8, y - 8, 16, 16);
-  }
-}
-
-function drawNebulae(ctx, w, h) {
-  const rand = rng(888);
-  const palettes = [
-    [255, 70, 90],   // emission red
-    [70, 130, 255],  // reflection blue
-    [180, 70, 255],  // planetary purple
-    [70, 200, 180],  // teal
-    [255, 200, 80],  // warm gold
-  ];
-  for (let i = 0; i < 10; i++) {
-    const x = rand() * w, y = rand() * h;
-    if (!isInside(x, y, w, h)) continue;
-    const c = palettes[Math.floor(rand() * palettes.length)];
-    const r = 25 + rand() * 55;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `rgba(${c[0]},${c[1]},${c[2]},0.018)`);
-    g.addColorStop(0.4, `rgba(${c[0]},${c[1]},${c[2]},0.006)`);
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g;
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
-}
-
-function drawGrid(ctx, w, h) {
-  ctx.strokeStyle = "rgba(80, 120, 200, 0.12)";  // More visible grid
-  ctx.lineWidth = 0.5;
-  for (let lon = -180; lon <= 180; lon += 30) {
-    ctx.beginPath();
-    for (let lat = -90; lat <= 90; lat++) {
-      const ra = lon < 0 ? lon + 360 : lon;
-      const { x, y } = mollweideProject(ra, lat, w, h);
-      lat === -90 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-  for (let lat = -60; lat <= 60; lat += 30) {
-    ctx.beginPath();
-    for (let ra = 0; ra <= 360; ra++) {
-      const { x, y } = mollweideProject(ra, lat, w, h);
-      ra === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-  // Boundary
-  ctx.strokeStyle = "rgba(80, 130, 220, 0.25)";  // Brighter boundary
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let lat = -90; lat <= 90; lat += 0.5) {
-    const { x, y } = mollweideProject(0, lat, w, h);
-    lat === -90 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  }
-  for (let lat = 90; lat >= -90; lat -= 0.5) {
-    const { x, y } = mollweideProject(359.99, lat, w, h);
-    ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.stroke();
-}
-
-function drawAlerts(ctx, alerts, w, h, selectedOid, time) {
-  if (!alerts?.length) return;
-  for (const a of alerts) {
-    if (a.ra == null || a.dec == null) continue;
-    const { x, y } = mollweideProject(a.ra, a.dec, w, h);
-    const info = getClassInfo(a.classification);
-    const color = info.color;
-    const sel = a.oid === selectedOid;
-    const phase = (time * 0.0012 + a.ra * 0.08) % (Math.PI * 2);
-    const ps = 16 + Math.sin(phase) * 5;
-
-    // Outer pulse (more visible)
-    const og = ctx.createRadialGradient(x, y, 0, x, y, ps);
-    og.addColorStop(0, color + "40");  // Increased from 28
-    og.addColorStop(0.4, color + "18");  // Increased from 0c
-    og.addColorStop(1, "transparent");
-    ctx.fillStyle = og;
-    ctx.fillRect(x - ps, y - ps, ps * 2, ps * 2);
-
-    // Inner glow (brighter)
-    const ig = ctx.createRadialGradient(x, y, 0, x, y, 8);
-    ig.addColorStop(0, color + "dd");  // Increased from aa
-    ig.addColorStop(0.5, color + "50");  // Increased from 30
-    ig.addColorStop(1, "transparent");
-    ctx.fillStyle = ig;
-    ctx.fillRect(x - 8, y - 8, 16, 16);
-
-    // Draw emoji instead of dot
-    ctx.font = sel ? "16px Arial" : "12px Arial";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    
-    // Add subtle shadow for visibility
-    ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
-    ctx.shadowBlur = 4;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 0;
-    
-    ctx.fillText(info.emoji, x, y);
-    
-    // Reset shadow
-    ctx.shadowColor = "transparent";
-    ctx.shadowBlur = 0;
-
-    if (sel) {
-      // Selection rings
-      ctx.strokeStyle = color + "cc";  // Brighter
-      ctx.lineWidth = 2;
-      ctx.beginPath(); 
-      ctx.arc(x, y, 12, 0, Math.PI * 2); 
-      ctx.stroke();
-      
-      ctx.strokeStyle = color + "40";  // More visible
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); 
-      ctx.arc(x, y, 18, 0, Math.PI * 2); 
-      ctx.stroke();
-    }
-  }
-}
-
-export default function SkyMap({ alerts, selectedOid, onSelectAlert, page = 1, totalPages = 1, total }) {
-  const canvasRef = useRef(null);
-  const animRef = useRef(null);
-  const bgRef = useRef(null);
   const [hovered, setHovered] = useState(null);
-  const [tip, setTip] = useState({ x: 0, y: 0 });
+  const [tipPos,  setTipPos]  = useState({ x: 0, y: 0 });
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    const w = rect.width, h = rect.height;
+  // Build 3D event objects from alerts
+  const events = useMemo(() => {
+    if (!alerts?.length) return [];
+    return alerts
+      .filter((a) => a.ra != null && a.dec != null)
+      .map((a, i) => ({ ...toXYZ(a.ra, a.dec, rand(80, 400)), index: i, alert: a }));
+  }, [alerts]);
 
-    // Cache static layers
-    if (!bgRef.current || bgRef.current.w !== w) {
-      const off = document.createElement("canvas");
-      off.width = w * dpr; off.height = h * dpr;
-      const oc = off.getContext("2d");
-      oc.scale(dpr, dpr);
-      drawBackground(oc, w, h);
-      drawNebulae(oc, w, h);
-      drawGrid(oc, w, h);
-      bgRef.current = { canvas: off, w };
-    }
-
-    function frame(t) {
-      ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(bgRef.current.canvas, 0, 0, w, h);
-      drawAlerts(ctx, alerts, w, h, selectedOid, t);
-      animRef.current = requestAnimationFrame(frame);
-    }
-    animRef.current = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(animRef.current);
-  }, [alerts, selectedOid]);
-
-  const onMove = (e) => {
-    if (!alerts?.length) return;
-    const r = canvasRef.current.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    let best = null, bd = 22;
+  // Legend: only classifications present in current alerts
+  const legendItems = useMemo(() => {
+    if (!alerts?.length) return [];
+    const seen = new Map();
     for (const a of alerts) {
-      if (a.ra == null) continue;
-      const p = mollweideProject(a.ra, a.dec, r.width, r.height);
-      const d = Math.hypot(p.x - mx, p.y - my);
-      if (d < bd) { bd = d; best = a; }
+      const info = getClassInfo(a.classification);
+      if (!seen.has(info.emoji)) seen.set(info.emoji, info);
     }
-    setHovered(best);
-    setTip({ x: mx, y: my });
+    return [...seen.values()];
+  }, [alerts]);
+
+  // ── Effect 1: THREE.js scene — runs ONCE on mount ────────────────────────
+  // Star field, renderer, camera, controls, animation loop.
+  // Never rebuilds. Reads eventsRef / spansRef as live refs each frame.
+  useEffect(() => {
+    const mount    = mountRef.current;
+    const interact = interactRef.current;
+    if (!mount || !interact) return;
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(mount.clientWidth, mount.clientHeight);
+    renderer.setClearColor(0x020208);
+    mount.appendChild(renderer.domElement);
+
+    // Scene + Camera
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(
+      75, mount.clientWidth / mount.clientHeight, 0.1, 5000
+    );
+    camera.position.set(0, 0, 0);
+
+    const tex = makeTex();
+
+    // ── Star layer 1: 40,000 pts, vertex colors ──────────────────────────
+    {
+      const count = 40000;
+      const pos = new Float32Array(count * 3);
+      const col = new Float32Array(count * 3);
+      const palettes = [
+        [0.85, 0.9,  1.0],
+        [1.0,  1.0,  1.0],
+        [1.0,  0.95, 0.8],
+        [0.7,  0.8,  1.0],
+      ];
+      for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.acos(2 * Math.random() - 1);
+        const r     = rand(120, 1500);
+        pos[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+        pos[i * 3 + 1] = r * Math.cos(phi);
+        pos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+        const p = palettes[Math.floor(Math.random() * palettes.length)];
+        col[i * 3] = p[0]; col[i * 3 + 1] = p[1]; col[i * 3 + 2] = p[2];
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute("color",    new THREE.BufferAttribute(col, 3));
+      scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.7, map: tex, vertexColors: true,
+        transparent: true, alphaTest: 0.005, depthWrite: false,
+      })));
+    }
+
+    // ── Star layer 2: 1,000 pts, bright additive ─────────────────────────
+    {
+      const count = 1000;
+      const pos = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.acos(2 * Math.random() - 1);
+        const r     = rand(80, 600);
+        pos[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+        pos[i * 3 + 1] = r * Math.cos(phi);
+        pos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 1.4, map: tex, color: 0xffffff,
+        transparent: true, alphaTest: 0.005,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })));
+    }
+
+    // ── Star layer 3: 12,000 pts, Milky Way band ─────────────────────────
+    {
+      const count = 12000;
+      const pos = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.PI / 2 + (Math.random() - 0.5) * 0.32;
+        const r     = rand(400, 1300);
+        pos[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+        pos[i * 3 + 1] = r * Math.cos(phi);
+        pos[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+      }
+      // Tilt ~63° around X axis — diagonal streak, not flat disc
+      const tilt = 63 * Math.PI / 180;
+      const cosT = Math.cos(tilt), sinT = Math.sin(tilt);
+      for (let i = 0; i < count; i++) {
+        const y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+        pos[i * 3 + 1] =  y * cosT - z * sinT;
+        pos[i * 3 + 2] =  y * sinT + z * cosT;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.5, map: tex, color: 0xaac4ff,
+        transparent: true, opacity: 0.18, alphaTest: 0.005,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })));
+    }
+
+    // ── Camera controls ───────────────────────────────────────────────────
+    let yaw = 0, pitch = 0, flyV = 0;
+    let isDragging = false, didDrag = false;
+    let lastX = 0, lastY = 0;
+    const euler  = new THREE.Euler(0, 0, 0, "YXZ");
+    const dir    = new THREE.Vector3();
+    const projV  = new THREE.Vector3();
+    const hprojV = new THREE.Vector3();
+
+    const onMouseDown = (e) => {
+      isDragging = true; didDrag = false;
+      lastX = e.clientX; lastY = e.clientY;
+    };
+    const onMouseMove = (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDrag = true;
+      yaw -= dx * 0.003;
+      pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch - dy * 0.003));
+      lastX = e.clientX; lastY = e.clientY;
+    };
+    const onMouseUp = () => { isDragging = false; };
+    const onWheel = (e) => {
+      flyV = Math.max(-30, Math.min(30, flyV - e.deltaY * 0.04));
+    };
+
+    let ltx = 0, lty = 0;
+    const onTouchStart = (e) => {
+      if (e.touches.length !== 1) return;
+      isDragging = true; didDrag = false;
+      ltx = e.touches[0].clientX; lty = e.touches[0].clientY;
+    };
+    const onTouchMove = (e) => {
+      if (!isDragging || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - ltx, dy = e.touches[0].clientY - lty;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDrag = true;
+      yaw -= dx * 0.003;
+      pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch - dy * 0.003));
+      ltx = e.touches[0].clientX; lty = e.touches[0].clientY;
+    };
+    const onTouchEnd = () => { isDragging = false; };
+
+    // Hover — reads eventsRef.current (live, set by Effect 2)
+    const onPointerMove = (e) => {
+      const rect = interact.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const W = interact.offsetWidth, H = interact.offsetHeight;
+      let nearest = null, nd = 20;
+      for (const ev of eventsRef.current) {
+        hprojV.set(ev.x, ev.y, ev.z).project(camera);
+        if (hprojV.z > 1) continue;
+        const d = Math.hypot((hprojV.x * 0.5 + 0.5) * W - mx, (-hprojV.y * 0.5 + 0.5) * H - my);
+        if (d < nd) { nd = d; nearest = ev; }
+      }
+      setHovered(nearest ? nearest.alert : null);
+      setTipPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    };
+    const onPointerLeave = () => setHovered(null);
+
+    // Click — reads eventsRef.current (live)
+    const onClick = (e) => {
+      if (didDrag) return;
+      const rect = interact.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const W = interact.offsetWidth, H = interact.offsetHeight;
+      let nearest = null, nd = 36;
+      for (const ev of eventsRef.current) {
+        hprojV.set(ev.x, ev.y, ev.z).project(camera);
+        if (hprojV.z > 1) continue;
+        const d = Math.hypot((hprojV.x * 0.5 + 0.5) * W - mx, (-hprojV.y * 0.5 + 0.5) * H - my);
+        if (d < nd) { nd = d; nearest = ev; }
+      }
+      if (nearest) onSelectAlert?.(nearest.alert);
+    };
+
+    interact.addEventListener("mousedown",  onMouseDown);
+    window.addEventListener("mousemove",    onMouseMove);
+    window.addEventListener("mouseup",      onMouseUp);
+    interact.addEventListener("wheel",      onWheel, { passive: true });
+    interact.addEventListener("mousemove",  onPointerMove);
+    interact.addEventListener("mouseleave", onPointerLeave);
+    interact.addEventListener("click",      onClick);
+    interact.addEventListener("touchstart", onTouchStart, { passive: true });
+    interact.addEventListener("touchmove",  onTouchMove,  { passive: true });
+    interact.addEventListener("touchend",   onTouchEnd);
+
+    const ro = new ResizeObserver(() => {
+      const w = mount.clientWidth, h = mount.clientHeight;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    });
+    ro.observe(mount);
+
+    // Animation loop — reads eventsRef / spansRef as live refs each frame
+    let rafId;
+    const animate = () => {
+      rafId = requestAnimationFrame(animate);
+
+      if (!isDragging) yaw += 0.00035;
+      euler.set(pitch, yaw, 0);
+      camera.quaternion.setFromEuler(euler);
+
+      if (Math.abs(flyV) > 0.05) {
+        dir.set(0, 0, -1).applyQuaternion(camera.quaternion);
+        camera.position.addScaledVector(dir, flyV * 0.35);
+        flyV *= 0.9;
+      }
+
+      renderer.render(scene, camera);
+
+      const cw = mount.clientWidth, ch = mount.clientHeight;
+      const curEvents = eventsRef.current;
+      const curSpans  = spansRef.current;
+      for (let i = 0; i < curEvents.length; i++) {
+        const ev   = curEvents[i];
+        const span = curSpans[i];
+        if (!span) continue;
+        projV.set(ev.x, ev.y, ev.z).project(camera);
+        if (projV.z > 1 || Math.abs(projV.x) > 1.2 || Math.abs(projV.y) > 1.2) {
+          span.style.visibility = "hidden";
+          continue;
+        }
+        const sx    = (projV.x * 0.5 + 0.5) * cw;
+        const sy    = (-projV.y * 0.5 + 0.5) * ch;
+        const depth = Math.max(0, Math.min(1, 1 - (projV.z + 1) / 2));
+        span.style.visibility = "visible";
+        span.style.transform  = `translate(calc(${sx}px - 50%), calc(${sy}px - 50%))`;
+        span.style.fontSize   = Math.round(10 + depth * 9) + "px";
+        span.style.opacity    = String(0.4 + depth * 0.6);
+      }
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      interact.removeEventListener("mousedown",  onMouseDown);
+      window.removeEventListener("mousemove",    onMouseMove);
+      window.removeEventListener("mouseup",      onMouseUp);
+      interact.removeEventListener("wheel",      onWheel);
+      interact.removeEventListener("mousemove",  onPointerMove);
+      interact.removeEventListener("mouseleave", onPointerLeave);
+      interact.removeEventListener("click",      onClick);
+      interact.removeEventListener("touchstart", onTouchStart);
+      interact.removeEventListener("touchmove",  onTouchMove);
+      interact.removeEventListener("touchend",   onTouchEnd);
+      ro.disconnect();
+      renderer.dispose();
+      tex.dispose();
+      if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+    };
+  }, []); // ← EMPTY: star field + controls built once, never rebuilt
+
+  // ── Effect 2: sync emoji spans when alerts change ────────────────────────
+  // Only swaps spans. Star field untouched. No visual flash on filter change.
+  useEffect(() => {
+    const emojiDiv = emojiRef.current;
+    if (!emojiDiv) return;
+
+    spansRef.current.forEach((s) => s.remove());
+
+    const newSpans = events.map((ev) => {
+      const span = document.createElement("span");
+      span.textContent = getClassInfo(ev.alert.classification).emoji;
+      span.style.cssText = [
+        "position:absolute", "top:0", "left:0",
+        "pointer-events:none", "user-select:none",
+        "will-change:transform,opacity", "line-height:1",
+        "visibility:hidden",
+      ].join(";");
+      emojiDiv.appendChild(span);
+      return span;
+    });
+
+    eventsRef.current = events;
+    spansRef.current  = newSpans;
+
+    return () => { newSpans.forEach((s) => s.remove()); };
+  }, [events]); // ← only event layer rebuilds on filter change
+
+  // ── Tooltip position ──────────────────────────────────────────────────────
+  const getTipStyle = () => {
+    const W = mountRef.current?.clientWidth  ?? 800;
+    const H = mountRef.current?.clientHeight ?? 400;
+    const cardW = 200, cardH = 90;
+    let left = tipPos.x + 14;
+    let top  = tipPos.y - cardH / 2;
+    if (left + cardW > W - 8) left = tipPos.x - cardW - 14;
+    if (top < 8)              top  = 8;
+    if (top + cardH > H - 8)  top  = H - cardH - 8;
+    return { position: "absolute", left, top, zIndex: 20, pointerEvents: "none" };
   };
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border border-white/[0.08]">
+    <div
+      className="relative rounded-2xl overflow-hidden border border-white/[0.08]"
+      style={{ height: "clamp(420px, 55vw, 650px)" }}
+    >
+      <div ref={mountRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} />
+      <div ref={emojiRef} style={{ position: "absolute", inset: 0, pointerEvents: "none" }} />
+
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-5 py-3 bg-gradient-to-b from-[#060b18] via-[#060b18dd] to-transparent">
+      <div
+        style={{ position: "absolute", top: 0, left: 0, right: 0, pointerEvents: "none" }}
+        className="z-10 flex items-center justify-between px-5 py-3 bg-gradient-to-b from-[#060b18] via-[#060b18dd] to-transparent"
+      >
         <h3 className="text-xs text-white/35 tracking-wider uppercase">
           All-Sky View
           <span className="normal-case tracking-normal ml-2 text-white/20">
-            Page {page} of {totalPages} · {alerts?.length || 0} events shown
+            Page {page} of {totalPages} · {alerts?.length ?? 0} events shown
           </span>
         </h3>
-        <div className="flex items-center gap-3 text-[9px]">
-          {["SNIa", "SNII", "AGN", "TDE", "KN"].map((cls) => {
-            const info = getClassInfo(cls);
-            return (
-              <span key={cls} className="flex items-center gap-1 text-white/25">
-                <span className="text-[8px]">{info.emoji}</span>
-                {info.name.split(" ").slice(-1)[0]}
-              </span>
-            );
-          })}
-        </div>
       </div>
 
-      <canvas
-        ref={canvasRef}
-        className="w-full aspect-[2.2/1] cursor-crosshair"
-        onMouseMove={onMove}
-        onMouseLeave={() => setHovered(null)}
-        onClick={() => hovered && onSelectAlert?.(hovered)}
+      {/* Bottom fade */}
+      <div
+        style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 40, pointerEvents: "none" }}
+        className="bg-gradient-to-t from-[#060b18] to-transparent"
       />
 
-      <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-[#060b18] to-transparent pointer-events-none" />
+      {/* Legend */}
+      {legendItems.length > 0 && (
+        <div
+          style={{ position: "absolute", bottom: 10, left: 14, pointerEvents: "none", zIndex: 10 }}
+          className="flex flex-wrap gap-x-3 gap-y-0.5"
+        >
+          {legendItems.map((info) => (
+            <span key={info.emoji} className="text-[9px] text-white/25 whitespace-nowrap">
+              {info.emoji} {info.name.split(" ").slice(-1)[0]}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Interaction layer */}
+      <div ref={interactRef} style={{ position: "absolute", inset: 0, cursor: "grab", zIndex: 15 }} />
 
       {/* Tooltip */}
       {hovered && (
-        <div className="absolute pointer-events-none z-20" style={{
-          left: tip.x + 16, top: tip.y - 12,
-          transform: tip.x > 500 ? "translateX(-110%)" : "none",
-        }}>
+        <div style={getTipStyle()}>
           <div className="bg-[#070e1f]/95 backdrop-blur-md border border-white/[0.08] rounded-xl px-3.5 py-2.5 shadow-2xl shadow-black/50 min-w-[180px]">
             <div className="flex items-center gap-2 mb-1">
               <span>{getClassInfo(hovered.classification).emoji}</span>
