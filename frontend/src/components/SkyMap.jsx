@@ -297,7 +297,7 @@ export default function SkyMap({ alerts, onSelectAlert, page = 1, totalPages = 1
         span.style.visibility = "visible";
         span.style.transform  = `translate(calc(${sx}px - 50%), calc(${sy}px - 50%))`;
         span.style.fontSize   = Math.round(20 + depth * 18) + "px";
-        span.style.opacity    = String(0.4 + depth * 0.6);
+        span.style.opacity    = String(0.65 + depth * 0.35);
       }
     };
     animate();
@@ -332,11 +332,14 @@ export default function SkyMap({ alerts, onSelectAlert, page = 1, totalPages = 1
     const newSpans = events.map((ev) => {
       const span = document.createElement("span");
       span.textContent = getClassInfo(ev.alert.classification).emoji;
+      const _info = getClassInfo(ev.alert.classification);
+      const _c = _info.color ?? "#ffffff";
       span.style.cssText = [
         "position:absolute", "top:0", "left:0",
         "pointer-events:none", "user-select:none",
         "will-change:transform,opacity", "line-height:1",
         "visibility:hidden",
+        `filter:drop-shadow(0 0 5px ${_c}) drop-shadow(0 0 12px ${_c}99)`,
       ].join(";");
       emojiDiv.appendChild(span);
       return span;
