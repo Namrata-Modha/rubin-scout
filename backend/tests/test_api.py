@@ -4,10 +4,28 @@ Tests for the alerts API endpoints.
 Run with: cd backend && python -m pytest tests/ -v
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.database import get_db
 from app.main import app
+
+
+# ── Shared DB mock ────────────────────────────────────────────────────────────
+
+async def _mock_db():
+    """Yield a fake AsyncSession that returns empty result sets."""
+    session = MagicMock()
+    # execute() returns an object whose scalars().all() → []
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    result.scalar_one_or_none.return_value = None
+    result.scalar.return_value = 0
+    session.execute = AsyncMock(return_value=result)
+    session.close = AsyncMock()
+    yield session
 
 
 @pytest.fixture
@@ -41,21 +59,25 @@ async def test_health_check():
 @pytest.mark.anyio
 async def test_recent_alerts_params():
     """Recent alerts endpoint accepts filter parameters."""
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Valid params should not error (may return empty if no DB)
-        response = await client.get(
-            "/api/alerts/recent",
-            params={
-                "classification": "SNIa",
-                "min_probability": 0.8,
-                "hours": 48,
-                "limit": 10,
-            },
-        )
-    # Will be 200 if DB is up, 500 if not. Both are acceptable in CI
-    # without a database — the important thing is the endpoint exists
-    assert response.status_code in (200, 500)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/alerts/recent",
+                params={
+                    "classification": "SNIa",
+                    "min_probability": 0.8,
+                    "hours": 48,
+                    "limit": 10,
+                },
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert "alerts" in data
+        assert data["alerts"] == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.mark.anyio
