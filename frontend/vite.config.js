@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.js',
+  },
   optimizeDeps: {
     include: ['three'],
     exclude: ['@react-three/fiber', '@react-three/drei'],
