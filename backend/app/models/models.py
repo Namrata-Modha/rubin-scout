@@ -189,3 +189,79 @@ class IngestionLog(Base):
     completed_at = Column(DateTime(timezone=True))
     status = Column(String, default="running")
     error_message = Column(Text)
+
+
+class AlertSource(Base):
+    """Registry of broker / data-source systems that produce live alerts.
+
+    One row per upstream feed (e.g. Fink/ZTF, CHIME/FRB, TNS, ALeRCE).
+    ``name`` is the stable machine key used throughout ingestion code;
+    ``display_name`` is the human-readable label shown in the UI.
+    """
+    __tablename__ = "alert_sources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Stable machine key — e.g. "fink_ztf", "chime_frb", "tns"
+    name = Column(String, nullable=False, unique=True)
+    # Human-readable label — e.g. "Fink (ZTF)", "CHIME/FRB"
+    display_name = Column(String, nullable=False)
+    # Broad category: "broker" | "catalog" | "voevent" | "stream"
+    source_type = Column(String, nullable=True)
+    # Base URL of the upstream REST / VOEvent API
+    base_url = Column(String, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    # Arbitrary per-source config (auth tokens, poll intervals, …)
+    config = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
+
+    alerts = relationship("AlertLive", back_populates="source",
+                          cascade="all, delete-orphan")
+
+
+class AlertLive(Base):
+    """A single live alert event ingested from an upstream broker or catalog.
+
+    ``external_id`` is the broker-assigned identifier (ZTF objectId,
+    CHIME tns_name, TNS internal name, …).  The composite unique constraint
+    on (source_id, external_id) prevents duplicate ingestion.
+
+    ``raw_payload`` stores the full broker JSON so nothing is discarded
+    before schema design is finalised.  ``oid`` is populated once the alert
+    has been cross-matched to the unified objects table.
+    """
+    __tablename__ = "alerts_live"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, ForeignKey("alert_sources.id", ondelete="CASCADE"),
+                       nullable=False)
+    # Broker-native identifier — unique within a source
+    external_id = Column(String, nullable=False)
+    ra = Column(Float, nullable=True)
+    dec = Column(Float, nullable=True)
+    # Fink classification string or FRB / transient type label
+    alert_type = Column(String, nullable=True)
+    classification = Column(String, nullable=True)
+    # Top classifier score (0–1); NULL when not available
+    classification_score = Column(Float, nullable=True)
+    # Full raw broker payload — nothing discarded
+    raw_payload = Column(JSONB, nullable=True)
+    # Julian date of the originating observation (NULL for push-only sources)
+    jd = Column(Float, nullable=True)
+    # Timestamp of the upstream detection event
+    detected_at = Column(DateTime(timezone=True), nullable=True)
+    # Timestamp this row was written into the DB
+    ingested_at = Column(DateTime(timezone=True), nullable=False,
+                         default=datetime.utcnow, server_default="now()")
+    # FK populated after cross-match to unified objects table
+    oid = Column(String, ForeignKey("objects.oid", ondelete="SET NULL"),
+                 nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    source = relationship("AlertSource", back_populates="alerts")
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_id",
+                         name="uq_alerts_live_source_external"),
+    )
