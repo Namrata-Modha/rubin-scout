@@ -28,6 +28,9 @@ Rubin Scout aggregates transient detections from multiple sky surveys and gravit
 **Transient alert browser**  
 Paginated dashboard filtered by classification (SNIa, SNII, SNIbc, SLSN, TDE, KN, AGN, Blazar, QSO, CV/Nova, FRB), time window, and ML confidence threshold. Each object shows a Legacy Survey cutout, ZTF light curve, per-band photometry (g/r/i), SIMBAD association, and classification probability breakdown.
 
+**Immersive all-sky view**  
+The dashboard includes a first-person 3D star field rendered with Three.js — the camera sits at the origin looking outward, surrounded by 40,000+ background stars with a tilted Milky Way band. Real astronomical events are overlaid as emoji markers positioned at their true RA/Dec coordinates: transients (💥🌟⚡✨🌀💎🕳️🔔🔥🔦), gravitational wave events (🌊), and fast radio bursts (📡). Each marker glows in its classification colour. Controls: drag to look around, scroll to fly forward/back, click any event to navigate to its detail page. The view auto-rotates slowly and pauses on interaction.
+
 **Gravitational wave counterpart search**  
 All public LIGO/Virgo/KAGRA events from GWOSC are ingested automatically. For localized events the PostGIS `ST_DWithin` query finds optical transients within the 90% credible region detected within a configurable time window around the GW trigger.
 
