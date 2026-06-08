@@ -169,7 +169,9 @@ class FinkIngestionService:
                             exc,
                         )
 
-            # Retention cleanup — runs after inserts, not before
+            # 90-day retention cap — Supabase free tier is 500 MB total.
+            # At ~400 new rows/night, keeping 90 days costs ~72 MB.
+            # Remove this line if Rubin Scout moves to paid/institutional hosting.
             await session.execute(
                 text(
                     "DELETE FROM alerts_live "
