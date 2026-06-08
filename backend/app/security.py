@@ -102,6 +102,10 @@ async def require_admin_key(
     - If ADMIN_API_KEY is not configured in production, returns 503.
     """
     if settings.app_env == "development":
+        logger.warning(
+            "Admin endpoint accessed without key validation "
+            "(app_env=development). Ensure APP_ENV=production on Render."
+        )
         return True
 
     admin_key = settings.admin_api_key

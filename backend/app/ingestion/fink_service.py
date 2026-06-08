@@ -86,6 +86,19 @@ def _parse_lastdate(lastdate: Optional[str]) -> Optional[datetime]:
     return None
 
 
+def _is_valid_alert(alert: dict) -> bool:
+    """Return True only if the three mandatory fields are present and non-None.
+
+    Alerts missing sky position or object identifier cannot be stored
+    meaningfully and must be skipped before reaching _insert_alert.
+    """
+    return (
+        alert.get("i:objectId") is not None
+        and alert.get("i:ra") is not None
+        and alert.get("i:dec") is not None
+    )
+
+
 def _pick_score(alert: dict, class_name: str) -> Optional[float]:
     """Return the most relevant classifier score for *class_name*.
 
@@ -156,6 +169,13 @@ class FinkIngestionService:
                     continue
 
                 for alert in raw_alerts:
+                    if not _is_valid_alert(alert):
+                        logger.warning(
+                            "Skipping invalid alert (missing objectId/ra/dec): objectId=%r",
+                            alert.get("i:objectId"),
+                        )
+                        continue
+
                     try:
                         inserted += await self._insert_alert(
                             session, alert, class_name, source_id
@@ -172,6 +192,7 @@ class FinkIngestionService:
             # 90-day retention cap — Supabase free tier is 500 MB total.
             # At ~400 new rows/night, keeping 90 days costs ~72 MB.
             # Remove this line if Rubin Scout moves to paid/institutional hosting.
+            # No user input involved — interval is hardcoded, not interpolated.
             await session.execute(
                 text(
                     "DELETE FROM alerts_live "
