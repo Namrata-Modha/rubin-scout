@@ -69,7 +69,7 @@ GET /api/alerts/conesearch/query PostGIS cone search (ra, dec, radius_arcsec)
 GET /api/ilmt/followup          ILMT follow-up planner (ZTF history, SIMBAD, GW coincidence, observatory visibility, recommendation)
 GET /api/observatories          Observatory preset list
 GET /api/gw/events              All GW events with candidate counts
-GET /api/gw/events/{id}/crossmatch  Run GW-optical counterpart search
+POST /api/gw/events/{id}/crossmatch  Run GW-optical counterpart search
 GET /api/health/ping            Keep-alive / uptime check
 ```
 
