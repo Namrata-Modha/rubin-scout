@@ -21,6 +21,7 @@ from app.enrichment.crossmatch import EnrichmentService
 from app.enrichment.gw_crossmatch import GWCrossMatchService
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.chime_service import ChimeFRBIngestionService
+from app.ingestion.fink_service import FinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 tns_service = TNSIngestionService()
 alerce_service = AlerceIngestionService()
 chime_service = ChimeFRBIngestionService()
+fink_service = FinkIngestionService()
 enrichment_service = EnrichmentService()
 gw_service = GWCrossMatchService()
 
@@ -108,6 +110,21 @@ async def refresh_gw_events():
             logger.error(f"✗ GW event refresh failed: {e}", exc_info=True)
 
 
+async def run_fink_ingestion():
+    """Ingest the latest Fink/ZTF live alerts into alerts_live.
+
+    Scheduled daily at 10:00 UTC — after the ZTF observing night closes and
+    Fink has finished classifying the night's alert stream.
+    """
+    logger.info("Starting Fink/ZTF live alert ingestion...")
+    async with async_session() as session:
+        try:
+            count = await fink_service.ingest(session)
+            logger.info(f"✓ Fink ingestion complete: {count} alerts inserted")
+        except Exception as e:
+            logger.error(f"✗ Fink ingestion failed: {e}", exc_info=True)
+
+
 def start_background_scheduler():
     """
     Start the background ingestion scheduler.
@@ -129,6 +146,18 @@ def start_background_scheduler():
         next_run_time=datetime.now(timezone.utc),  # Run immediately on start
         id="ingestion_cycle",
         name="TNS + ALeRCE Ingestion",
+        replace_existing=True,
+    )
+
+    # Fink/ZTF live alerts — daily at 10:00 UTC (after ZTF night closes)
+    _scheduler.add_job(
+        run_fink_ingestion,
+        "cron",
+        hour=10,
+        minute=0,
+        timezone="UTC",
+        id="fink_ingestion",
+        name="Fink/ZTF Live Alert Ingestion",
         replace_existing=True,
     )
 
@@ -162,6 +191,7 @@ def start_background_scheduler():
     logger.info("  - TNS ingestion (primary discovery)")
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
+    logger.info("  - Fink/ZTF live alert ingestion (daily 10:00 UTC)")
     logger.info("  - GWOSC GW event refresh (weekly)")
     logger.info("  - Database keep-alive ping (every 4 min)")
     logger.info("=" * 60)
