@@ -212,11 +212,14 @@ class FinkIngestionService:
             logger.error("Fink ingestion run aborted: %s", exc, exc_info=True)
             try:
                 log.status = "failed"
-                log.error_message = str(exc)[:2000]
+                log.error_message = str(exc)[:2000]  # truncate for column width
                 log.completed_at = datetime.now(timezone.utc)
                 await session.commit()
-            except Exception:
-                pass  # don't mask the original error
+            except Exception as commit_exc:
+                # Commit itself failed — log and bail without masking the original
+                logger.error(
+                    "Failed to persist IngestionLog failure record: %s", commit_exc
+                )
             return 0
 
         logger.info(
@@ -264,7 +267,7 @@ class FinkIngestionService:
             "output-format": "json",
         }
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(self._api_url, json=payload)
         except httpx.HTTPError as exc:
             logger.error(
