@@ -14,6 +14,7 @@ Three tests:
      _insert_alert does not raise and returns 0.
 """
 
+from datetime import timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,6 +22,8 @@ import pytest
 from app.ingestion.fink_service import (
     FINK_API_URL,
     FinkIngestionService,
+    _parse_lastdate,
+    _pick_score,
     _strip_lc_features,
 )
 
@@ -212,3 +215,49 @@ async def test_non_200_response_returns_none(httpx_mock):
     service = FinkIngestionService(api_url=FINK_API_URL)
     result = await service._fetch_class("SN candidate")
     assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# _parse_lastdate — both Fink date formats                                    #
+# --------------------------------------------------------------------------- #
+
+def test_parse_lastdate_with_milliseconds():
+    dt = _parse_lastdate("2026-06-07 10:03:28.002")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.month == 6
+    assert dt.day == 7
+    assert dt.tzinfo == timezone.utc
+
+
+def test_parse_lastdate_without_milliseconds():
+    dt = _parse_lastdate("2026-06-07 10:03:28")
+    assert dt is not None
+    assert dt.year == 2026
+    assert dt.tzinfo == timezone.utc
+
+
+def test_parse_lastdate_none_returns_none():
+    assert _parse_lastdate(None) is None
+
+
+def test_parse_lastdate_empty_returns_none():
+    assert _parse_lastdate("") is None
+
+
+# --------------------------------------------------------------------------- #
+# _pick_score — correct classifier field per class                            #
+# --------------------------------------------------------------------------- #
+
+def test_pick_score_kilonova_uses_rf_kn():
+    alert = {"d:rf_kn_vs_nonkn": 0.667, "d:snn_sn_vs_all": 0.123}
+    assert _pick_score(alert, "Kilonova candidate") == pytest.approx(0.667)
+
+
+def test_pick_score_sn_candidate_uses_snn():
+    alert = {"d:rf_kn_vs_nonkn": 0.667, "d:snn_sn_vs_all": 0.481}
+    assert _pick_score(alert, "SN candidate") == pytest.approx(0.481)
+
+
+def test_pick_score_missing_field_returns_none():
+    assert _pick_score({}, "SN candidate") is None
