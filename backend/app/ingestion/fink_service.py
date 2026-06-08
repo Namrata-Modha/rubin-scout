@@ -11,8 +11,11 @@ after every insert batch to keep the table bounded.
 
 Confirmed working endpoint (from Sprint 4 API audit):
     https://api.ztf.fink-portal.org/api/v1/latests
-The root domain api.fink-portal.org refused connections during the audit;
-the ztf subdomain is the stable ZTF-specific endpoint.
+Official documented endpoint from https://fink-portal.org/api.
+During the Sprint 4 local audit api.fink-portal.org timed out due to a
+local network restriction; api.ztf.fink-portal.org was used as a workaround.
+That subdomain is undocumented — the root domain is canonical and works
+fine from Render's network.
 """
 
 import logging
@@ -32,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Constants                                                                    #
 # --------------------------------------------------------------------------- #
 
-FINK_API_URL = "https://api.ztf.fink-portal.org/api/v1/latests"
+FINK_API_URL = "https://api.fink-portal.org/api/v1/latests"
 
 FINK_CLASSES = [
     "SN candidate",
@@ -295,7 +298,12 @@ class FinkIngestionService:
             pg_insert(AlertLive)
             .values(
                 source_id=source_id,
-                external_id=str(alert["i:objectId"]),
+                # candid is the per-observation ID — one row per nightly alert.
+                # Using objectId here would give a snapshot (one row per
+                # transient, silently dropped on subsequent nights).  Using
+                # candid gives a proper log: classification score evolution is
+                # preserved and the 90-day retention actually does useful work.
+                external_id=str(alert["i:candid"]),
                 ra=alert.get("i:ra"),
                 dec=alert.get("i:dec"),
                 alert_type="ztf_fink",
