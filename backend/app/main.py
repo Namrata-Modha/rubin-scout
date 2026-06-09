@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from app.api import alerts, alerts_live, gw, ingest, subscriptions
+from app.api.alerts_live import detail_router as alerts_live_detail_router
 from app.api.images import router as images_router
 from app.config import get_settings
 from app.ingestion.scheduler import start_background_scheduler, stop_background_scheduler
@@ -72,6 +73,7 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 # Routes
 app.include_router(alerts.router)
 app.include_router(alerts_live.router)
+app.include_router(alerts_live_detail_router)
 app.include_router(gw.router)
 app.include_router(ingest.router)
 app.include_router(subscriptions.router)
