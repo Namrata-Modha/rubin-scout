@@ -19,6 +19,9 @@ export default function Header() {
           <Link to="/" className="hover:text-white transition-colors">
             Dashboard
           </Link>
+          <Link to="/live-sky" className="hover:text-white transition-colors">
+            Live Sky
+          </Link>
           <Link to="/gravitational-waves" className="hover:text-white transition-colors">
             GW Events
           </Link>

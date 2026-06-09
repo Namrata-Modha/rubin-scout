@@ -97,6 +97,39 @@ export const CLASS_INFO = {
       "An extremely brief but intensely bright burst of radio waves from across the cosmos, lasting only milliseconds. Most are one-off events with unknown origins; a few repeat. Detected by CHIME at DRAO Penticton, Canada.",
     color: "#e599f7",
   },
+  // Fink/ZTF broker classification labels (exact strings returned by the API)
+  "SN candidate": {
+    name: "SN Candidate",
+    emoji: "💥",
+    short: "Supernova candidate (Fink/ZTF)",
+    description:
+      "A transient flagged by the Fink broker's SuperNNova classifier as a likely supernova based on ZTF light curve evolution. Awaiting spectroscopic confirmation.",
+    color: "#ff6b6b",
+  },
+  "Kilonova candidate": {
+    name: "Kilonova Candidate",
+    emoji: "🔔",
+    short: "Neutron star merger candidate",
+    description:
+      "A transient identified by the Fink random-forest classifier as a potential kilonova — the optical afterglow of two neutron stars merging. Associated with gravitational wave sources.",
+    color: "#ffd43b",
+  },
+  "Early SN Ia candidate": {
+    name: "Early SN Ia",
+    emoji: "💥",
+    short: "Early-phase Type Ia candidate",
+    description:
+      "A Type Ia supernova candidate caught within days of explosion. Early observations constrain the progenitor system and explosion physics before the light curve peaks.",
+    color: "#ff8787",
+  },
+  "SLSN candidate": {
+    name: "SLSN Candidate",
+    emoji: "✨",
+    short: "Superluminous SN candidate",
+    description:
+      "A candidate superluminous supernova — 10–100× brighter than a normal supernova. Flagged by Fink based on ZTF photometry and slow-evolving light curves.",
+    color: "#e599f7",
+  },
 };
 
 export function getClassInfo(classification) {
