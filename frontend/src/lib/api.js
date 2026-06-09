@@ -104,6 +104,11 @@ export async function getLiveClassifications() {
   return fetchJSON(`/live-alerts/live/classifications`);
 }
 
+/** Get full detail for a single live alert by its Fink candid external_id. */
+export async function getLiveAlertDetail(externalId) {
+  return fetchJSON(`/live-alerts/live/${externalId}`);
+}
+
 /** Get built-in observatory presets. */
 export async function getObservatories() {
   return fetchJSON(`/observatories`);

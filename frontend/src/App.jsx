@@ -4,6 +4,7 @@ import AlertDetail from "./pages/AlertDetail";
 import GravitationalWaves from "./pages/GravitationalWaves";
 import FollowUpPlanner from "./pages/FollowUpPlanner";
 import LiveSky from "./pages/LiveSky";
+import LiveAlertDetail from "./pages/LiveAlertDetail";
 import Header from "./components/Header";
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/alert/:oid" element={<AlertDetail />} />
             <Route path="/live-sky" element={<LiveSky />} />
+            <Route path="/live-sky/:externalId" element={<LiveAlertDetail />} />
             <Route path="/gravitational-waves" element={<GravitationalWaves />} />
             <Route path="/followup" element={<FollowUpPlanner />} />
           </Routes>

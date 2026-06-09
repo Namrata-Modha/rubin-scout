@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Filter, RefreshCw, Activity, Star, Clock } from "lucide-react";
 import SkyMap from "../components/SkyMap";
 import { getLiveAlerts, getLiveClassifications } from "../lib/api";
@@ -68,7 +69,10 @@ function LiveAlertCard({ alert }) {
   const score = alert.classification_score;
 
   return (
-    <div className="bg-white/[0.025] border border-white/[0.06] rounded-xl p-4 transition-all duration-200 hover:bg-white/[0.04] hover:border-white/[0.1]">
+    <Link
+      to={`/live-sky/${alert.external_id}`}
+      className="group block bg-white/[0.025] hover:bg-white/[0.045] border border-white/[0.06] hover:border-white/[0.12] rounded-xl p-4 transition-all duration-200"
+    >
       <div className="flex items-start gap-3 mb-3">
         {/* Emoji badge */}
         <span
@@ -128,7 +132,7 @@ function LiveAlertCard({ alert }) {
           {alert.external_id}
         </p>
       </div>
-    </div>
+    </Link>
   );
 }
 
