@@ -96,12 +96,12 @@ export async function getFRBEvents({ limit = 100, offset = 0 } = {}) {
 export async function getLiveAlerts({ limit = 50, offset = 0, classification = null } = {}) {
   const params = new URLSearchParams({ limit, offset });
   if (classification) params.set("classification", classification);
-  return fetchJSON(`/alerts/live?${params}`);
+  return fetchJSON(`/live-alerts/live?${params}`);
 }
 
 /** Get distinct classification values + counts from alerts_live. */
 export async function getLiveClassifications() {
-  return fetchJSON(`/alerts/live/classifications`);
+  return fetchJSON(`/live-alerts/live/classifications`);
 }
 
 /** Get full detail for a single live alert by its Fink candid external_id. */

@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.models import AlertLive, AlertSource
+from app.models.models import AlertLive
 from app.security import limiter
 
 router = APIRouter(prefix="/api/alerts", tags=["live-alerts"])
