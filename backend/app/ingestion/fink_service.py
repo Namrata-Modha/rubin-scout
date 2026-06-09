@@ -9,13 +9,8 @@ ON CONFLICT DO NOTHING so reruns are always safe.
 One IngestionLog row is written per run.  A 90-day retention DELETE runs
 after every insert batch to keep the table bounded.
 
-Confirmed working endpoint (from Sprint 4 API audit):
-    https://api.ztf.fink-portal.org/api/v1/latests
-Official documented endpoint from https://fink-portal.org/api.
-During the Sprint 4 local audit api.fink-portal.org timed out due to a
-local network restriction; api.ztf.fink-portal.org was used as a workaround.
-That subdomain is undocumented — the root domain is canonical and works
-fine from Render's network.
+Endpoint: https://api.ztf.fink-portal.org/api/v1/latests
+Confirmed reachable from Render's network during Sprint 4 testing.
 """
 
 import logging
@@ -35,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Constants                                                                    #
 # --------------------------------------------------------------------------- #
 
-FINK_API_URL = "https://api.fink-portal.org/api/v1/latests"
+FINK_API_URL = "https://api.ztf.fink-portal.org/api/v1/latests"
 
 FINK_CLASSES = [
     "SN candidate",

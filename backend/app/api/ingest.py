@@ -49,6 +49,19 @@ async def ingest_tns_daily(
     return {"status": "ok", "source": "tns_csv", "objects_ingested": count}
 
 
+@router.post("/fink/trigger", dependencies=[Depends(require_admin_key)])
+@limiter.limit("5/minute")
+async def trigger_fink_ingestion(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a Fink ingestion run."""
+    from app.ingestion.fink_service import FinkIngestionService
+    service = FinkIngestionService()
+    count = await service.ingest(db)
+    return {"status": "ok", "alerts_inserted": count}
+
+
 @router.post("/admin/backfill-tns-photometry", dependencies=[Depends(require_admin_key)])
 @limiter.limit("5/minute")
 async def backfill_tns_photometry(
