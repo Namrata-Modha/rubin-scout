@@ -70,8 +70,8 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # Routes
-app.include_router(alerts.router)
 app.include_router(alerts_live.router)
+app.include_router(alerts.router)
 app.include_router(gw.router)
 app.include_router(ingest.router)
 app.include_router(subscriptions.router)
