@@ -130,6 +130,27 @@ export const CLASS_INFO = {
       "A candidate superluminous supernova — 10–100× brighter than a normal supernova. Flagged by Fink based on ZTF photometry and slow-evolving light curves.",
     color: "#e599f7",
   },
+  "Unknown": {
+    name: "Unknown",
+    emoji: "🔭",
+    short: "Unclassified transient",
+    description: "Fink could not assign this alert to any known class. Multi-band follow-up observations are needed.",
+    color: "#adb5bd",
+  },
+  "Ambiguous": {
+    name: "Ambiguous", 
+    emoji: "❓",
+    short: "Unclear classification",
+    description: "Multiple Fink classifiers disagree on the nature of this transient. Additional observations needed to resolve the classification.",
+    color: "#868e96",
+  },
+  "Microlensing candidate": {
+    name: "Microlensing Candidate",
+    emoji: "🔍",
+    short: "Gravitational microlensing event",
+    description: "A background star temporarily brightened by the gravitational lens effect of a foreground object passing in front of it.",
+    color: "#74c0fc",
+  },
 };
 
 export function getClassInfo(classification) {
