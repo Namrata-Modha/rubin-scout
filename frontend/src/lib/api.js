@@ -92,6 +92,18 @@ export async function getFRBEvents({ limit = 100, offset = 0 } = {}) {
   return fetchJSON(`/alerts/recent?${params}`);
 }
 
+/** Get paginated live alerts from alerts_live (Fink/ZTF broker). */
+export async function getLiveAlerts({ limit = 50, offset = 0, classification = null } = {}) {
+  const params = new URLSearchParams({ limit, offset });
+  if (classification) params.set("classification", classification);
+  return fetchJSON(`/alerts/live?${params}`);
+}
+
+/** Get distinct classification values + counts from alerts_live. */
+export async function getLiveClassifications() {
+  return fetchJSON(`/alerts/live/classifications`);
+}
+
 /** Get built-in observatory presets. */
 export async function getObservatories() {
   return fetchJSON(`/observatories`);
