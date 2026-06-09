@@ -372,7 +372,7 @@ export default function LiveAlertDetail() {
             <div className="flex items-start justify-between gap-4 py-1.5">
               <span className="text-white/35">Luminosity distance</span>
               <span className="text-right font-mono text-[12px] text-white/70">
-                {xm.mangrove_lum_dist.toFixed(1)} Mpc
+                {parseFloat(xm.mangrove_lum_dist).toFixed(1)} Mpc
               </span>
             </div>
           )}
