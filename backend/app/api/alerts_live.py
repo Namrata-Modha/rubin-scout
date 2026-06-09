@@ -16,8 +16,7 @@ from app.database import get_db
 from app.models.models import AlertLive
 from app.security import limiter
 
-router = APIRouter(prefix="/api/alerts", tags=["live-alerts"])
-
+router = APIRouter(prefix="/api/live-alerts", tags=["live-alerts"])
 
 @router.get("/live")
 @limiter.limit("60/minute")
