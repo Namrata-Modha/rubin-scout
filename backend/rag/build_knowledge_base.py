@@ -103,9 +103,14 @@ def main() -> None:
         print("ERROR: DATABASE_URL not set", file=sys.stderr)
         sys.exit(1)
 
-    # langchain-postgres wants a sync psycopg3 DSN
-    # Accept both asyncpg and psycopg DSNs and normalise
-    connection = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    # Normalise to psycopg3 scheme — langchain-postgres requires it.
+    connection = (
+        db_url
+        .replace("postgresql+asyncpg://", "postgresql+psycopg://")
+        .replace("postgres://", "postgresql+psycopg://")
+    )
+    if connection.startswith("postgresql://"):
+        connection = "postgresql+psycopg://" + connection[len("postgresql://"):]
 
     print("Loading source documents...")
     raw_docs = _load_markdown_docs() + _extract_class_info_docs()
