@@ -70,7 +70,15 @@ def _build_chain():
     if not db_url:
         raise ValueError("DATABASE_URL environment variable is not set")
 
-    connection = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
+    # Normalise to psycopg3 scheme — langchain-postgres requires it.
+    # Handles postgresql+asyncpg://, postgresql://, and postgres:// (Heroku/Render style).
+    connection = (
+        db_url
+        .replace("postgresql+asyncpg://", "postgresql+psycopg://")
+        .replace("postgres://", "postgresql+psycopg://")
+    )
+    if connection.startswith("postgresql://"):
+        connection = "postgresql+psycopg://" + connection[len("postgresql://"):]
 
     vectorstore = PGVector(
         embeddings=GeminiEmbeddings(),
