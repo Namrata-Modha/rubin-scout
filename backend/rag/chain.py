@@ -17,9 +17,10 @@ import sys
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+from langchain_core.runnables import RunnableLambda, RunnableParallel, RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_postgres import PGVector
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from rag.embeddings import GeminiEmbeddings
 
@@ -79,10 +80,15 @@ def _build_chain():
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
+    chat_model = os.environ.get("GEMINI_CHAT_MODEL", "gemini-3.5-flash")
     llm = ChatGoogleGenerativeAI(
-        model="gemini-3.5-flash",
+        model=chat_model,
         google_api_key=os.environ.get("GEMINI_API_KEY"),
     )
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+    def _invoke_llm(prompt_value):
+        return llm.invoke(prompt_value)
 
     # Retrieve docs once, fan out to both the answer chain and source passthrough
     retrieve = RunnableParallel(
@@ -96,7 +102,7 @@ def _build_chain():
             "question": lambda x: x["question"],
         }
         | _PROMPT
-        | llm
+        | RunnableLambda(_invoke_llm)
         | StrOutputParser()
     )
 
