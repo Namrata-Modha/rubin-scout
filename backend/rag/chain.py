@@ -75,7 +75,7 @@ def _build_chain():
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-3.5-flash",
         google_api_key=os.environ.get("GEMINI_API_KEY"),
     )
 
