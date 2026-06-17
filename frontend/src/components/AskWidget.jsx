@@ -209,7 +209,7 @@ export default function AskWidget() {
             <button
               onClick={() => setOpen(false)}
               aria-label="Close"
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
+              className="w-11 h-11 rounded-lg flex items-center justify-center text-white/40 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
             >
               <X className="w-4 h-4" />
             </button>

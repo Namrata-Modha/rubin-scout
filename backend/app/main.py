@@ -39,6 +39,13 @@ async def lifespan(app: FastAPI):
     if settings.app_env != "test":
         start_background_scheduler()
 
+    # Warm up RAG chain (non-fatal — RAG failure must not block app startup)
+    try:
+        from rag.chain import warm_up
+        warm_up()
+    except Exception as exc:
+        logger.warning("RAG warm_up import failed (non-fatal): %s", exc)
+
     yield
 
     # Shutdown

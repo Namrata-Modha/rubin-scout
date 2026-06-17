@@ -19,7 +19,7 @@ class AskResponse(BaseModel):
 
 @router.post("/ask", response_model=AskResponse)
 @limiter.limit("10/minute")
-async def ask_knowledge_base(request: Request, body: AskRequest):
+def ask_knowledge_base(request: Request, body: AskRequest):
     """Answer a question using the Rubin Scout RAG knowledge base."""
     from rag.chain import ask
 

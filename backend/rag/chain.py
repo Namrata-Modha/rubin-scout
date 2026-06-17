@@ -124,6 +124,21 @@ def _get_chain():
     return _chain
 
 
+def warm_up() -> None:
+    """Build the chain singleton at startup so the first real request is fast.
+
+    Failures are caught and logged — RAG is not load-bearing for the rest of
+    the app, so a missing env var or DB hiccup must not prevent startup.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        _get_chain()
+        logger.info("RAG chain initialised successfully")
+    except Exception as exc:
+        logger.warning("RAG chain warm-up failed (non-fatal): %s", exc)
+
+
 def ask(question: str) -> dict:
     """Return {"answer": str, "sources": list[dict]}."""
     result = _get_chain().invoke(question)
