@@ -132,20 +132,24 @@ def main() -> None:
     )
 
     # Verify: count rows in the collection
-    import psycopg
-    raw_conn_str = connection.replace("postgresql+psycopg://", "postgresql://")
-    with psycopg.connect(raw_conn_str) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
+    # Verify: count rows in the collection
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(connection)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
                 """
                 SELECT COUNT(*), COUNT(embedding)
                 FROM langchain_pg_embedding e
                 JOIN langchain_pg_collection c ON c.uuid = e.collection_id
-                WHERE c.name = %s
-                """,
-                (COLLECTION_NAME,),
-            )
-            total, non_null = cur.fetchone()
+                WHERE c.name = :collection_name
+                """
+            ),
+            {"collection_name": COLLECTION_NAME},
+        )
+        total, non_null = result.fetchone()
+    engine.dispose()
 
     print(f"\nDone. {total} rows inserted, {non_null} with non-null embeddings.")
 

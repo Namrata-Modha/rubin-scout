@@ -47,7 +47,7 @@ anyio>=4.0.0
 
 # RAG / vector search
 langchain==0.3.25
-langchain-postgres==0.0.14
+langchain-postgres>=0.0.16,<0.1.0
 langchain-text-splitters==0.3.8
 psycopg[binary]==3.2.6
 google-genai==1.16.0
