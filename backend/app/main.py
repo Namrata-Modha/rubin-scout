@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
-from app.api import alerts, alerts_live, gw, ingest, subscriptions
+from app.api import alerts, alerts_live, ask, gw, ingest, subscriptions
 from app.api.alerts_live import detail_router as alerts_live_detail_router
 from app.api.images import router as images_router
 from app.config import get_settings
@@ -38,6 +38,13 @@ async def lifespan(app: FastAPI):
     # Start background ingestion scheduler
     if settings.app_env != "test":
         start_background_scheduler()
+
+    # Warm up RAG chain (non-fatal — RAG failure must not block app startup)
+    try:
+        from rag.chain import warm_up
+        warm_up()
+    except Exception as exc:
+        logger.warning("RAG warm_up import failed (non-fatal): %s", exc)
 
     yield
 
@@ -78,6 +85,7 @@ app.include_router(gw.router)
 app.include_router(ingest.router)
 app.include_router(subscriptions.router)
 app.include_router(images_router)
+app.include_router(ask.router)
 
 @app.get("/")
 async def root():

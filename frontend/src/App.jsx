@@ -6,6 +6,7 @@ import FollowUpPlanner from "./pages/FollowUpPlanner";
 import LiveSky from "./pages/LiveSky";
 import LiveAlertDetail from "./pages/LiveAlertDetail";
 import Header from "./components/Header";
+import AskWidget from "./components/AskWidget";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="/followup" element={<FollowUpPlanner />} />
           </Routes>
         </main>
+        <AskWidget />
       </div>
     </BrowserRouter>
   );
