@@ -109,6 +109,14 @@ export async function getLiveAlertDetail(externalId) {
   return fetchJSON(`/live-alerts/live/${externalId}`);
 }
 
+/** Ask the RAG knowledge base a question. */
+export async function askQuestion(question) {
+  return fetchJSON(`/ask`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+}
+
 /** Get built-in observatory presets. */
 export async function getObservatories() {
   return fetchJSON(`/observatories`);
