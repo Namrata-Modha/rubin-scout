@@ -121,6 +121,13 @@ def main() -> None:
     print("Initialising embeddings (Gemini gemini-embedding-001 @ 768d)...")
     embeddings = GeminiEmbeddings()
 
+    # Pre-flight: generate all embeddings BEFORE touching the existing collection.
+    # If any chunk fails (even after retries inside GeminiEmbeddings._embed), this
+    # raises and the old collection is left intact.
+    print(f"Pre-flight: generating embeddings for all {len(chunks)} chunks...")
+    _ = embeddings.embed_documents([c.page_content for c in chunks])
+    print(f"All {len(chunks)} embeddings generated successfully, proceeding with rebuild...")
+
     print(f"Upserting into PGVector collection '{COLLECTION_NAME}'...")
     vectorstore = PGVector.from_documents(
         documents=chunks,

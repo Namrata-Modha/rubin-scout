@@ -51,6 +51,8 @@ langchain-postgres>=0.0.16,<0.1.0
 langchain-text-splitters==0.3.8
 psycopg[binary]==3.2.6
 google-genai==1.16.0
+langchain-google-genai
+tenacity>=8.2.0
 
 # Dev
 ruff==0.9.3
