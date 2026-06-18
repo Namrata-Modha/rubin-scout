@@ -109,11 +109,11 @@ export async function getLiveAlertDetail(externalId) {
   return fetchJSON(`/live-alerts/live/${externalId}`);
 }
 
-/** Ask the RAG knowledge base a question. */
-export async function askQuestion(question) {
+/** Ask the RAG knowledge base a question with optional chat history. */
+export async function askQuestion(question, history = []) {
   return fetchJSON(`/ask`, {
     method: "POST",
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, history }),
   });
 }
 

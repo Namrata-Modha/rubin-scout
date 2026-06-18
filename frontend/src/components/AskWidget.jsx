@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { MessageCircle, X, Send, Loader2, ExternalLink } from "lucide-react";
 import { askQuestion } from "../lib/api";
 
+// Keep in sync with HISTORY_LIMIT in backend/app/api/ask.py
+const HISTORY_LIMIT = 6;
+
 // ── Error message helper ───────────────────────────────────────────────────
 
 function errorText(err) {
@@ -128,12 +131,22 @@ export default function AskWidget() {
       const q = input.trim();
       if (!q || loading) return;
 
+      // Build history from real exchange turns only:
+      // - skip the hardcoded welcome message (index 0, assistant, no prior user turn)
+      // - skip role:"error" (UI-only, not real conversation context)
+      // - cap to last HISTORY_LIMIT turns to match the backend cap
+      const history = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .slice(1) // drop the canned welcome greeting (first message)
+        .slice(-HISTORY_LIMIT)
+        .map((m) => ({ role: m.role, content: m.text }));
+
       setInput("");
       setMessages((prev) => [...prev, { role: "user", text: q }]);
       setLoading(true);
 
       try {
-        const data = await askQuestion(q);
+        const data = await askQuestion(q, history);
         setMessages((prev) => [
           ...prev,
           {
@@ -151,7 +164,7 @@ export default function AskWidget() {
         setLoading(false);
       }
     },
-    [input, loading]
+    [input, loading, messages]
   );
 
   // ── Panel style — dynamic height on mobile when keyboard is open ─────────
