@@ -2,8 +2,10 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { MessageCircle, X, Send, Loader2, ExternalLink } from "lucide-react";
 import { askQuestion } from "../lib/api";
 
-// Keep in sync with HISTORY_LIMIT in backend/app/api/ask.py
+// Keep in sync with HISTORY_LIMIT / MAX_*_CONTENT in backend/app/api/ask.py
 const HISTORY_LIMIT = 6;
+const MAX_USER_CONTENT = 500;
+const MAX_ASSISTANT_CONTENT = 2000;
 
 // ── Error message helper ───────────────────────────────────────────────────
 
@@ -145,8 +147,8 @@ export default function AskWidget() {
           messages[i].role === "user" &&
           messages[i + 1]?.role === "assistant"
         ) {
-          pairs.push({ role: "user", content: messages[i].text });
-          pairs.push({ role: "assistant", content: messages[i + 1].text });
+          pairs.push({ role: "user",      content: messages[i].text.slice(0, MAX_USER_CONTENT) });
+          pairs.push({ role: "assistant", content: messages[i + 1].text.slice(0, MAX_ASSISTANT_CONTENT) });
           i++; // skip the assistant turn we just consumed
         }
       }
