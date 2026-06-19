@@ -131,15 +131,26 @@ export default function AskWidget() {
       const q = input.trim();
       if (!q || loading) return;
 
-      // Build history from real exchange turns only:
-      // - skip the hardcoded welcome message (index 0, assistant, no prior user turn)
-      // - skip role:"error" (UI-only, not real conversation context)
-      // - cap to last HISTORY_LIMIT turns to match the backend cap
-      const history = messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .slice(1) // drop the canned welcome greeting (first message)
-        .slice(-HISTORY_LIMIT)
-        .map((m) => ({ role: m.role, content: m.text }));
+      // Build history as strictly alternating (user, assistant) PAIRS only.
+      // A user turn is included only when the immediately following message is
+      // role:"assistant" — this guarantees no orphaned user turns in the array,
+      // which would violate Gemini's role-alternation requirement and cause API
+      // errors (e.g. after a network error the failed user turn has no response).
+      // Also drops the canned welcome greeting (index 0, assistant with no prior
+      // user turn) and caps to the last HISTORY_LIMIT turns (= HISTORY_LIMIT/2
+      // complete pairs), matching the backend cap.
+      const pairs = [];
+      for (let i = 1; i < messages.length - 1; i++) {
+        if (
+          messages[i].role === "user" &&
+          messages[i + 1]?.role === "assistant"
+        ) {
+          pairs.push({ role: "user", content: messages[i].text });
+          pairs.push({ role: "assistant", content: messages[i + 1].text });
+          i++; // skip the assistant turn we just consumed
+        }
+      }
+      const history = pairs.slice(-HISTORY_LIMIT);
 
       setInput("");
       setMessages((prev) => [...prev, { role: "user", text: q }]);
