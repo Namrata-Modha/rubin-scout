@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { MessageCircle, X, Send, Loader2, ExternalLink } from "lucide-react";
 import { askQuestion } from "../lib/api";
 
+// Keep in sync with HISTORY_LIMIT in backend/app/api/ask.py
+const HISTORY_LIMIT = 6;
+
 // ── Error message helper ───────────────────────────────────────────────────
 
 function errorText(err) {
@@ -128,12 +131,33 @@ export default function AskWidget() {
       const q = input.trim();
       if (!q || loading) return;
 
+      // Build history as strictly alternating (user, assistant) PAIRS only.
+      // A user turn is included only when the immediately following message is
+      // role:"assistant" — this guarantees no orphaned user turns in the array,
+      // which would violate Gemini's role-alternation requirement and cause API
+      // errors (e.g. after a network error the failed user turn has no response).
+      // Also drops the canned welcome greeting (index 0, assistant with no prior
+      // user turn) and caps to the last HISTORY_LIMIT turns (= HISTORY_LIMIT/2
+      // complete pairs), matching the backend cap.
+      const pairs = [];
+      for (let i = 1; i < messages.length - 1; i++) {
+        if (
+          messages[i].role === "user" &&
+          messages[i + 1]?.role === "assistant"
+        ) {
+          pairs.push({ role: "user", content: messages[i].text });
+          pairs.push({ role: "assistant", content: messages[i + 1].text });
+          i++; // skip the assistant turn we just consumed
+        }
+      }
+      const history = pairs.slice(-HISTORY_LIMIT);
+
       setInput("");
       setMessages((prev) => [...prev, { role: "user", text: q }]);
       setLoading(true);
 
       try {
-        const data = await askQuestion(q);
+        const data = await askQuestion(q, history);
         setMessages((prev) => [
           ...prev,
           {
@@ -151,7 +175,7 @@ export default function AskWidget() {
         setLoading(false);
       }
     },
-    [input, loading]
+    [input, loading, messages]
   );
 
   // ── Panel style — dynamic height on mobile when keyboard is open ─────────
