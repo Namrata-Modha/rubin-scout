@@ -4,6 +4,10 @@
 
 Rubin Scout aggregates transient detections from multiple sky surveys and gravitational wave catalogs into a single searchable database. It enriches each event with ML classifications, photometry, SIMBAD cross-matches, and observatory visibility windows, and exposes everything through a REST API and interactive dashboard.
 
+Rubin Scout is designed for students, citizen scientists, and researchers new to time-domain and multi-messenger astronomy who want a single environment for exploring transient alerts, gravitational wave events, and optical follow-up planning — without needing separate subscriptions to professional broker infrastructure.
+
+The platform is under active development toward a public release.
+
 **Live:** https://rubin-scout.vercel.app  
 **API docs:** https://rubin-scout.vercel.app/api/docs  
 **Version:** v0.1
