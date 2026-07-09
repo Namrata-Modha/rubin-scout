@@ -12,7 +12,6 @@ Required env vars:
     GEMINI_API_KEY — Google Gemini API key
 """
 
-import json
 import os
 import re
 import sys
@@ -134,7 +133,7 @@ def main() -> None:
     print(f"All {len(chunks)} embeddings generated successfully, proceeding with rebuild...")
 
     print(f"Upserting into PGVector collection '{COLLECTION_NAME}'...")
-    vectorstore = PGVector.from_documents(
+    PGVector.from_documents(
         documents=chunks,
         embedding=embeddings,
         collection_name=COLLECTION_NAME,

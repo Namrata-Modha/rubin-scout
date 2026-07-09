@@ -9,7 +9,6 @@ import pytest
 
 from app.validation import validate_classification, validate_oid
 
-
 # ---------------------------------------------------------------------------
 # validate_oid
 # ---------------------------------------------------------------------------

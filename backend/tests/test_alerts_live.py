@@ -11,7 +11,6 @@ No real database or HTTP calls — DB sessions are replaced with AsyncMock via
 dependency_overrides, following the same pattern as test_api.py.
 """
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +19,6 @@ from httpx import ASGITransport, AsyncClient
 from app.api.alerts_live import _extract_payload_fields
 from app.database import get_db
 from app.main import app
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

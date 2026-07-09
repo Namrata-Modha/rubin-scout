@@ -12,7 +12,6 @@ from httpx import ASGITransport, AsyncClient
 from app.database import get_db
 from app.main import app
 
-
 # ── Shared DB mock ────────────────────────────────────────────────────────────
 
 async def _mock_db():

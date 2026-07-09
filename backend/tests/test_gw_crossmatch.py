@@ -9,9 +9,8 @@ Neither function touches the database, so no fixtures are required.
 
 import pytest
 
-from app.enrichment.gw_crossmatch import _classify_from_masses
 from app.api.alerts import _gw_sky_separation_deg
-
+from app.enrichment.gw_crossmatch import _classify_from_masses
 
 # ---------------------------------------------------------------------------
 # _classify_from_masses

@@ -5,10 +5,8 @@ _build_recommendation and _mjd_to_datetime are pure functions with no
 database access, so no fixtures are required.
 """
 
-import pytest
 
 from app.api.alerts import _build_recommendation, _mjd_to_datetime
-
 
 # ---------------------------------------------------------------------------
 # _build_recommendation

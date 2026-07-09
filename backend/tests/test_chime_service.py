@@ -4,6 +4,7 @@ ChimeFRBIngestionService._extract_fields is a pure function —
 no database, no HTTP calls required.
 """
 import pytest
+
 from app.ingestion.chime_service import ChimeFRBIngestionService
 
 service = ChimeFRBIngestionService()
