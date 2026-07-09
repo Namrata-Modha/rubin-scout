@@ -161,7 +161,7 @@ class TNSIngestionService:
                     return 0
 
                 if response.status_code == 401:
-                    logger.error(f"TNS 401 — credentials rejected. Check TNS_API_KEY in Render env vars.")
+                    logger.error("TNS 401 — credentials rejected. Check TNS_API_KEY in Render env vars.")
                 elif response.status_code == 403:
                     logger.warning(
                         "TNS returned 403 — likely transient (rate-limit or upstream hiccup), "
