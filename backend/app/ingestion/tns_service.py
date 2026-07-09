@@ -160,8 +160,15 @@ class TNSIngestionService:
                     await session.commit()
                     return 0
 
+                if response.status_code == 401:
+                    logger.error(f"TNS 401 — credentials rejected. Check TNS_API_KEY in Render env vars.")
+                elif response.status_code == 403:
+                    logger.warning(
+                        "TNS returned 403 — likely transient (rate-limit or upstream hiccup), "
+                        "will retry next cycle. If this persists across many cycles, check "
+                        "TNS_API_KEY in Render env vars."
+                    )
                 if response.status_code in (401, 403):
-                    logger.error(f"TNS {response.status_code}. Check TNS credentials in .env")
                     log_entry.status = "auth_failed"
                     log_entry.error_message = f"HTTP {response.status_code}"
                     log_entry.completed_at = datetime.now(timezone.utc)
