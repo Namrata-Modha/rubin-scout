@@ -3,7 +3,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
-from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, RetryError, retry_if_exception, stop_after_attempt, wait_exponential
 
 router = APIRouter(prefix="/api/images", tags=["Images"])
 logger = logging.getLogger(__name__)
@@ -72,6 +72,6 @@ async def get_cutout(
                 "X-Dec": str(dec),
             },
         )
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, RetryError) as exc:
         logger.error("Failed to fetch cutout for RA=%s, Dec=%s: %s", ra, dec, exc)
         raise HTTPException(503, "Failed to fetch telescope image")
