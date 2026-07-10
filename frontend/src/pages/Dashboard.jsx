@@ -4,6 +4,7 @@ import StatsBar from "../components/StatsBar";
 import SkyMap from "../components/SkyMap";
 import AlertTable from "../components/AlertTable";
 import { getRecentAlerts, getSummaryStats, getClassifications } from "../lib/api";
+import { CLASS_INFO } from "../lib/cosmos";
 
 const LOOKBACK_OPTIONS = [
   { label: "24h", value: 24 },
@@ -157,7 +158,7 @@ export default function Dashboard() {
       {/* Quick category filters */}
       <div className="flex flex-wrap items-center gap-2">
         {[
-          { label: "All", emoji: "🌌", value: "", color: "#748ffc" },
+          { label: "All", emoji: "🌌", value: "", color: "#748ffc", tooltip: "Everything detected across the universe" },
           { label: "Supernova Ia", emoji: "💥", value: "SNIa", color: "#ff6b6b" },
           { label: "Supernova II", emoji: "🌟", value: "SNII", color: "#ffa94d" },
           { label: "Nucleus", emoji: "🌀", value: "AGN", color: "#74c0fc" },
@@ -168,10 +169,12 @@ export default function Dashboard() {
           { label: "Fast Radio Burst", emoji: "📡", value: "FRB", color: "#e599f7" },
         ].map((cat) => {
           const isActive = selectedClass === cat.value;
+          const tooltip = cat.tooltip ?? CLASS_INFO[cat.value]?.tooltip;
           return (
             <button
               key={cat.value}
               onClick={() => setSelectedClass(cat.value)}
+              title={tooltip}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-all border"
               style={{
                 background: isActive ? cat.color + "25" : "rgba(255,255,255,0.025)",

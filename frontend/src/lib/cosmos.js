@@ -7,6 +7,7 @@ export const CLASS_INFO = {
   SNIa: {
     name: "Type Ia Supernova",
     emoji: "💥",
+    tooltip: "White dwarf exploding — used to measure cosmic distances",
     short: "Exploding white dwarf",
     description:
       "A white dwarf star stole too much matter from a companion and detonated in a thermonuclear explosion. These all explode with nearly the same brightness, which is how we measure the expansion of the universe.",
@@ -16,6 +17,7 @@ export const CLASS_INFO = {
   SNII: {
     name: "Type II Supernova",
     emoji: "🌟",
+    tooltip: "Massive star collapsing in under a second",
     short: "Massive star collapse",
     description:
       "A massive star (8+ times our Sun) ran out of fuel and its core collapsed in under a second. The outer layers rebounded in an explosion visible across the universe. This is how heavy elements like gold and iron are forged.",
@@ -42,6 +44,7 @@ export const CLASS_INFO = {
   TDE: {
     name: "Tidal Disruption Event",
     emoji: "🕳️",
+    tooltip: "A star being torn apart and consumed",
     short: "Star shredded by black hole",
     description:
       "A star wandered too close to a supermassive black hole and was torn apart by tidal forces. The stellar debris forms a glowing accretion disk as it spirals into the black hole, producing a bright flare.",
@@ -51,6 +54,7 @@ export const CLASS_INFO = {
   AGN: {
     name: "Active Galactic Nucleus",
     emoji: "🌀",
+    tooltip: "Galaxy core with an active feeding black hole",
     short: "Feeding supermassive black hole",
     description:
       "A supermassive black hole at the center of a galaxy, actively swallowing surrounding gas and dust. The material heats up to millions of degrees as it spirals in, creating a beacon of light visible across billions of light-years.",
@@ -59,6 +63,7 @@ export const CLASS_INFO = {
   Blazar: {
     name: "Blazar",
     emoji: "🔦",
+    tooltip: "Jet of energy pointed directly at Earth",
     short: "Black hole jet aimed at Earth",
     description:
       "An active galactic nucleus with a relativistic jet of particles pointed directly at us. We're staring down the barrel of a beam of matter moving at near the speed of light.",
@@ -75,6 +80,7 @@ export const CLASS_INFO = {
   KN: {
     name: "Kilonova",
     emoji: "🔔",
+    tooltip: "Two neutron stars colliding — where gold is made",
     short: "Neutron star collision",
     description:
       "Two neutron stars spiraled together and merged in a cataclysmic collision. This is the primary source of heavy elements like gold and platinum, and produces both gravitational waves and electromagnetic radiation.",
@@ -84,6 +90,7 @@ export const CLASS_INFO = {
   "CV/Nova": {
     name: "Nova",
     emoji: "🔥",
+    tooltip: "White dwarf stealing gas from a companion star",
     short: "Recurring stellar eruption",
     description:
       "A white dwarf star in a binary system that periodically erupts when hydrogen from its companion accumulates on its surface and ignites in a thermonuclear flash. Unlike a supernova, the star survives.",
@@ -92,6 +99,7 @@ export const CLASS_INFO = {
   FRB: {
     name: "Fast Radio Burst",
     emoji: "📡",
+    tooltip: "Millisecond cosmic flash, origin still unknown",
     short: "Millisecond cosmic radio flash",
     description:
       "An extremely brief but intensely bright burst of radio waves from across the cosmos, lasting only milliseconds. Most are one-off events with unknown origins; a few repeat. Detected by CHIME at DRAO Penticton, Canada.",
