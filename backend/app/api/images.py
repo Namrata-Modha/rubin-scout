@@ -3,7 +3,13 @@ import logging
 
 import httpx
 from fastapi import APIRouter, HTTPException, Response
-from tenacity import AsyncRetrying, RetryError, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import (
+    AsyncRetrying,
+    RetryError,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 router = APIRouter(prefix="/api/images", tags=["Images"])
 logger = logging.getLogger(__name__)
