@@ -28,7 +28,7 @@ function glow(ctx, x, y, r, rgba) {
 function caption(ctx, W, text) {
   ctx.save();
   ctx.font = "10px ui-monospace,monospace";
-  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
   ctx.textAlign = "center";
   ctx.fillText(text, W / 2, CH - 14);
   ctx.restore();

@@ -30,8 +30,8 @@ async def get_live_alerts(
     classification: Optional[str] = Query(None, description="Filter by Fink classification label"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return paginated rows from alerts_live, newest first."""
-    stmt = select(AlertLive).order_by(AlertLive.ingested_at.desc())
+    """Return paginated rows from alerts_live, most recently detected first."""
+    stmt = select(AlertLive).order_by(AlertLive.detected_at.desc())
     count_stmt = select(func.count()).select_from(AlertLive)
 
     if classification:
