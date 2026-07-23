@@ -41,8 +41,11 @@ alert is stored in the `alerts_live` table with its sky position, Julian date, F
 classification label, classifier probability score, and full raw payload (large
 light-curve feature blobs are stripped before storage to keep the database bounded).
 Duplicate ingestion is prevented by a named unique constraint on `(source_id,
-external_id)`; every insert uses `ON CONFLICT DO NOTHING` so reruns are safe. A
-90-day retention window keeps the table under ~72 MB on Supabase free tier.
+external_id)`; every insert uses `ON CONFLICT DO NOTHING` so reruns are safe.
+Rows are retained indefinitely — `alerts_live` is an append-only detection log,
+so each object's classification-score history is preserved. At the current
+insert rate (~29 rows/day) the table grows roughly 26 MB/year all-in (including
+indexes); storage is bounded by stripping heavy payload blobs, not by deleting rows.
 
 **Gravitational wave counterpart search**  
 All public LIGO/Virgo/KAGRA events from GWTC (GWOSC) are ingested automatically, and the counterpart-search infrastructure — a PostGIS `ST_DWithin` query that finds optical transients within a skymap's credible region and persists them as candidates — is in place. However, sky-localization ingestion (parsing per-event skymaps into each event's centre and 90% area) is **not yet implemented**, so no ingested event currently carries localization. Until it lands, `POST /api/gw/events/{id}/crossmatch` returns **HTTP 422** (localization unavailable) rather than a spatially unfiltered candidate list. `GET /api/gw/events/{id}/candidates` reads any previously computed candidates.
