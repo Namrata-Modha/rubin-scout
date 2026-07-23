@@ -12,7 +12,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.enrichment.gw_crossmatch import GWCrossMatchService
+from app.enrichment.gw_crossmatch import (
+    GWCrossMatchService,
+    LocalizationUnavailableError,
+)
 from app.security import limiter, require_admin_key
 from app.validation import validate_superevent_id
 
@@ -71,6 +74,10 @@ async def run_cross_match(
         candidates = await gw_service.cross_match_event(
             db, superevent_id, search_radius_deg, time_window_days
         )
+    except LocalizationUnavailableError as e:
+        # 422: the event exists but cannot be cross-matched without a skymap.
+        # Distinct from an empty 200 the UI would render as "no candidates".
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -94,6 +101,9 @@ async def get_candidates(request: Request, superevent_id: str, db: AsyncSession 
 
     try:
         candidates = await gw_service.cross_match_event(db, superevent_id)
+    except LocalizationUnavailableError as e:
+        # 422: sky localization not available — see run_cross_match note.
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

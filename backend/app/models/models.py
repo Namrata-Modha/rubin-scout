@@ -44,6 +44,13 @@ class Object(Base):
     host_galaxy_name = Column(String)
     host_galaxy_redshift = Column(Float)
     dispersion_measure = Column(Float, nullable=True)
+    # Per-axis sky-localization uncertainty in degrees (1-sigma).  Populated for
+    # CHIME/FRB rows from VizieR e_RAJ2000 / e_DEJ2000 (J/ApJS/257/59/table2);
+    # NULL for optical sources whose positions are effectively exact for
+    # cross-matching.  FRB regions are large (~arcminutes) and must not be
+    # cross-matched at optical (arcsec) tolerances.
+    ra_err_deg = Column(Float, nullable=True)
+    dec_err_deg = Column(Float, nullable=True)
     broker_source = Column(String, default="tns")
     alert_url = Column(String)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -68,6 +75,8 @@ class Object(Base):
             "host_galaxy_name": self.host_galaxy_name,
             "host_galaxy_redshift": self.host_galaxy_redshift,
             "dispersion_measure": self.dispersion_measure,
+            "ra_err_deg": self.ra_err_deg,
+            "dec_err_deg": self.dec_err_deg,
             "broker_source": self.broker_source,
             "alert_url": self.alert_url,
         }

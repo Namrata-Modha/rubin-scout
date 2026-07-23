@@ -21,15 +21,33 @@ from astropy.time import Time
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import GWCandidate, GWEvent, Object
+from app.models.models import GWCandidate, GWEvent
 
 logger = logging.getLogger(__name__)
 
-# Public GW events from GWTC catalogs (no authentication needed)
-GRACEDB_PUBLIC_URL = "https://gracedb.ligo.org/apiweb/superevents"
+
+class LocalizationUnavailableError(Exception):
+    """Raised when a GW event has no usable sky localization.
+
+    A gravitational-wave cross-match is only scientifically meaningful with a
+    spatial (skymap) term.  When ``properties.ra_center`` / ``dec_center`` are
+    absent we must fail explicitly rather than return a spatially unfiltered
+    candidate list, so the API can surface a distinct 4xx to the caller.
+    """
+
 
 # GWOSC public catalog API
 GWOSC_API_URL = "https://gwosc.org/eventapi/json/allevents/"
+
+# NOTE on skymap_url: the GWOSC event API does NOT expose a stable public URL
+# for a HEALPix/MOC skymap FITS file.  The flat catalog gives only PE posterior
+# HDF5 files (dcc.ligo.org) and strain data — no skymap.  The GraceDB
+# superevent/apiweb path that this module used previously was built from the
+# GWOSC commonName (e.g. "GW170817"), which is NOT a GraceDB superevent id
+# (those are S-prefixed, e.g. "S190814bv").  Every such URL 404s, and the
+# authenticated GraceDB G-event path (e.g. "G298048") returns 401 (non-public).
+# Until real skymap ingestion lands (separate session) we store None rather
+# than a guaranteed-broken URL.  See Task 3 report.
 
 # Human-readable descriptions for notable events only
 DESCRIPTIONS = {
@@ -230,35 +248,70 @@ class GWCrossMatchService:
     """Cross-matches optical transients with gravitational wave events."""
 
     async def seed_gw_events(self, session: AsyncSession) -> int:
-        """Load GW events from GWOSC into the database. Upserts all events."""
+        """Load GW events from GWOSC into the database, upserting existing rows.
+
+        For a new ``superevent_id`` a fresh row is inserted.  For an existing
+        row the refreshable fields are updated so the weekly refresh actually
+        picks up revised GWOSC values:
+
+          Overwritten from GWOSC : ``far``, ``classification``, ``skymap_url``
+          Merged into ``properties`` : every non-None value from the new
+              payload is written; an existing non-None value is NEVER clobbered
+              by an incoming None.  This refreshes catalog-derived fields
+              (distance, masses, description) while PRESERVING any locally
+              computed localisation (``ra_center`` / ``dec_center`` /
+              ``area_90_deg2``) that a future skymap-ingestion job may have
+              written — those are always None in the flat GWOSC catalog.
+          Preserved untouched : ``event_time``, ``created_at``.
+
+        Returns the number of rows inserted OR updated.
+        """
         events = await fetch_gwosc_events()
         if not events:
             logger.warning("No events returned from GWOSC; skipping seed")
             return 0
 
-        count = 0
+        inserted = 0
+        updated = 0
         for evt in events:
             superevent_id = evt["superevent_id"]
-            existing = await session.execute(
+            result = await session.execute(
                 select(GWEvent).where(GWEvent.superevent_id == superevent_id)
             )
-            if existing.scalar_one_or_none():
-                continue
+            existing = result.scalar_one_or_none()
 
-            gw = GWEvent(
-                superevent_id=superevent_id,
-                event_time=evt["event_time"],
-                far=evt["far"],
-                skymap_url=f"{GRACEDB_PUBLIC_URL}/{superevent_id}/files/bayestar.multiorder.fits",
-                classification=evt["classification"],
-                properties=evt["properties"],
-            )
-            session.add(gw)
-            count += 1
+            if existing is None:
+                gw = GWEvent(
+                    superevent_id=superevent_id,
+                    event_time=evt["event_time"],
+                    far=evt["far"],
+                    # No verified public skymap URL exists; store None (Task 3).
+                    skymap_url=None,
+                    classification=evt["classification"],
+                    properties=evt["properties"],
+                )
+                session.add(gw)
+                inserted += 1
+            else:
+                existing.far = evt["far"]
+                existing.classification = evt["classification"]
+                # No verified public skymap URL exists; store None (Task 3).
+                existing.skymap_url = None
+                # Merge properties: refresh with incoming non-None values but
+                # never overwrite an existing non-None value with None, so
+                # locally computed localisation survives the weekly refresh.
+                merged = dict(existing.properties or {})
+                for key, value in (evt["properties"] or {}).items():
+                    if value is not None or key not in merged:
+                        merged[key] = value
+                existing.properties = merged
+                updated += 1
 
         await session.commit()
-        logger.info(f"Seeded {count} new GW events from GWOSC")
-        return count
+        logger.info(
+            "Seeded GW events from GWOSC: %d inserted, %d updated", inserted, updated
+        )
+        return inserted + updated
 
     async def cross_match_event(
         self,
@@ -296,9 +349,15 @@ class GWCrossMatchService:
         dec_center = props.get("dec_center")
 
         if ra_center is None or dec_center is None:
-            # Poorly localized event, search entire database within time window
-            logger.warning(f"{superevent_id} has no localization, searching by time only")
-            return await self._search_by_time_only(session, gw_event, time_window_days)
+            # A cross-match with no spatial term is scientifically invalid: it
+            # would return the highest-probability transients anywhere on the
+            # sky and mislabel them as counterparts.  Fail explicitly instead.
+            logger.warning(
+                "%s has no sky localization; refusing to cross-match", superevent_id
+            )
+            raise LocalizationUnavailableError(
+                f"Sky localization is not yet available for {superevent_id}"
+            )
 
         # Use the 90% credible area to set search radius if available
         area_90 = props.get("area_90_deg2", 0)
@@ -373,39 +432,6 @@ class GWCrossMatchService:
         await session.commit()
         logger.info(f"Found {len(candidates)} candidates for {superevent_id}")
         return candidates
-
-    async def _search_by_time_only(
-        self, session: AsyncSession, gw_event: GWEvent, time_window_days: float
-    ) -> list[dict]:
-        """For poorly localized events, search by time window only."""
-        event_time = gw_event.event_time
-        time_start = event_time - timedelta(days=7)
-        time_end = event_time + timedelta(days=time_window_days)
-
-        result = await session.execute(
-            select(Object)
-            .where(Object.last_detection >= time_start)
-            .where(Object.first_detection <= time_end)
-            .where(Object.classification.in_(["SNIa", "SNIbc", "SNII", "TDE", "KN", "CV/Nova"]))
-            .order_by(Object.classification_probability.desc())
-            .limit(50)
-        )
-
-        return [
-            {
-                "oid": obj.oid,
-                "ra": obj.ra,
-                "dec": obj.dec,
-                "classification": obj.classification,
-                "probability": obj.classification_probability,
-                "n_detections": obj.n_detections,
-                "distance_deg": None,
-                "distance_arcsec": None,
-                "cross_match": obj.cross_match_name,
-                "in_90_region": None,  # Unknown without localization
-            }
-            for obj in result.scalars().all()
-        ]
 
     async def get_all_events(self, session: AsyncSession) -> list[dict]:
         """Get all GW events with their properties."""

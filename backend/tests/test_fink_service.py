@@ -21,6 +21,7 @@ import pytest
 
 from app.ingestion.fink_service import (
     FINK_API_URL,
+    FINK_CLASSES,
     FinkIngestionService,
     _parse_lastdate,
     _pick_score,
@@ -261,3 +262,43 @@ def test_pick_score_sn_candidate_uses_snn():
 
 def test_pick_score_missing_field_returns_none():
     assert _pick_score({}, "SN candidate") is None
+
+
+# --------------------------------------------------------------------------- #
+# Task 7 — the 90-day retention DELETE must be gone                           #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_ingest_issues_no_delete(monkeypatch):
+    """A full ingest() run must never execute a DELETE against alerts_live.
+
+    alerts_live is an append-only detection log; the rolling retention DELETE
+    that used to run here has been removed.
+    """
+    service = FinkIngestionService()
+
+    # One alert for the first class, nothing for the rest — no HTTP either way.
+    async def fake_fetch(class_name):
+        return [SAMPLE_ALERT] if class_name == FINK_CLASSES[0] else []
+
+    monkeypatch.setattr(service, "_fetch_class", fake_fetch)
+
+    # A single mock result serves both _ensure_source (scalar_one_or_none)
+    # and _insert_alert (rowcount).
+    source = MagicMock()
+    source.id = 1
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = source
+    result.rowcount = 1
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.add = MagicMock()
+
+    inserted = await service.ingest(session)
+
+    assert inserted == 1
+    # Inspect every SQL statement passed to execute — none may be a DELETE.
+    for call in session.execute.await_args_list:
+        sql = str(call.args[0]).upper()
+        assert "DELETE" not in sql
