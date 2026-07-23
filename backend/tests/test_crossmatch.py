@@ -1,5 +1,5 @@
 """
-Unit tests for app/enrichment/crossmatch.py (repair-pass Tasks 4 & 5).
+Unit tests for SIMBAD enrichment: FRB exclusion and thread offload.
 
 No network and no database: the blocking SIMBAD call and the rate-limit sleep
 are patched, and Object instances are constructed in memory.
@@ -12,7 +12,7 @@ from app.enrichment.crossmatch import SIMBAD_RATE_LIMIT_SECONDS, EnrichmentServi
 from app.models.models import Object
 
 # ---------------------------------------------------------------------------
-# Task 5 — the blocking SIMBAD query is offloaded to a worker thread
+# The blocking SIMBAD query is offloaded to a worker thread
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_enrich_object_offloads_blocking_query_to_thread():
 
 
 # ---------------------------------------------------------------------------
-# Task 5 — enrich_batch applies a real (non-blocking) rate-limit delay
+# enrich_batch applies a real (non-blocking) rate-limit delay
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_enrich_batch_rate_limits_with_sleep():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 — FRBs are excluded from the 5-arcsec SIMBAD path
+# FRBs are excluded from the 5-arcsec SIMBAD path
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

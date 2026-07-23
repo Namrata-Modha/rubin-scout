@@ -194,7 +194,7 @@ class FinkIngestionService:
             # history on a rolling basis; it has been removed. Storage is
             # reclaimed later by trimming raw_payload on old rows once its
             # display keys are promoted to typed columns — never by dropping
-            # records. See fink_service Task 7 report.
+            # records.
 
             log.objects_ingested = inserted
             log.completed_at = datetime.now(timezone.utc)

@@ -21,7 +21,7 @@ from astropy.time import Time
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import GWCandidate, GWEvent
+from app.models.models import GWCandidate, GWEvent, Object
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +39,22 @@ class LocalizationUnavailableError(Exception):
 # GWOSC public catalog API
 GWOSC_API_URL = "https://gwosc.org/eventapi/json/allevents/"
 
-# NOTE on skymap_url: the GWOSC event API does NOT expose a stable public URL
-# for a HEALPix/MOC skymap FITS file.  The flat catalog gives only PE posterior
-# HDF5 files (dcc.ligo.org) and strain data — no skymap.  The GraceDB
-# superevent/apiweb path that this module used previously was built from the
-# GWOSC commonName (e.g. "GW170817"), which is NOT a GraceDB superevent id
-# (those are S-prefixed, e.g. "S190814bv").  Every such URL 404s, and the
-# authenticated GraceDB G-event path (e.g. "G298048") returns 401 (non-public).
-# Until real skymap ingestion lands (separate session) we store None rather
-# than a guaranteed-broken URL.  See Task 3 report.
+# skymap_url is stored as None: the flat v1 GWOSC catalog fetched here carries
+# no skymap, and the GraceDB apiweb URL this code once built (GWOSC commonName
+# mis-used as an S-prefixed superevent id) always 404s. Real skymaps live in the
+# GWOSC v2 API and per-catalog Zenodo tarballs; ingesting them is out of scope
+# for this module. Full details, verified URLs and DOIs: docs/gw-skymaps.md.
+
+# The known-broken skymap URL pattern this module used to write (GWOSC
+# commonName mis-used as a GraceDB superevent id). Rows still carrying it should
+# be cleared to None on refresh; any other (locally ingested) URL is preserved.
+_BROKEN_SKYMAP_PREFIX = "https://gracedb.ligo.org/apiweb/superevents/"
+
+
+def _is_broken_skymap_url(url: str | None) -> bool:
+    """True if `url` is the legacy guaranteed-404 GraceDB pattern (or None)."""
+    return url is None or url.startswith(_BROKEN_SKYMAP_PREFIX)
+
 
 # Human-readable descriptions for notable events only
 DESCRIPTIONS = {
@@ -254,7 +261,10 @@ class GWCrossMatchService:
         row the refreshable fields are updated so the weekly refresh actually
         picks up revised GWOSC values:
 
-          Overwritten from GWOSC : ``far``, ``classification``, ``skymap_url``
+          Overwritten from GWOSC : ``far``, ``classification``
+          ``skymap_url`` : overwritten only when GWOSC supplies a value, or to
+              clear a legacy broken GraceDB URL; a real URL written locally by a
+              future skymap-ingestion job is preserved.
           Merged into ``properties`` : every non-None value from the new
               payload is written; an existing non-None value is NEVER clobbered
               by an incoming None.  This refreshes catalog-derived fields
@@ -285,7 +295,8 @@ class GWCrossMatchService:
                     superevent_id=superevent_id,
                     event_time=evt["event_time"],
                     far=evt["far"],
-                    # No verified public skymap URL exists; store None (Task 3).
+                    # No verified public skymap URL exists for this catalog;
+                    # store None (see docs/gw-skymaps.md).
                     skymap_url=None,
                     classification=evt["classification"],
                     properties=evt["properties"],
@@ -295,8 +306,16 @@ class GWCrossMatchService:
             else:
                 existing.far = evt["far"]
                 existing.classification = evt["classification"]
-                # No verified public skymap URL exists; store None (Task 3).
-                existing.skymap_url = None
+                # skymap_url follows the same "don't clobber good data" rule as
+                # properties. The flat GWOSC catalog carries no skymap, so the
+                # incoming value is None. Only overwrite when GWOSC actually
+                # provides a URL, OR to clear a legacy broken GraceDB URL. A real
+                # URL written locally by skymap ingestion survives.
+                incoming_skymap = evt.get("skymap_url")
+                if incoming_skymap is not None:
+                    existing.skymap_url = incoming_skymap
+                elif _is_broken_skymap_url(existing.skymap_url):
+                    existing.skymap_url = None
                 # Merge properties: refresh with incoming non-None values but
                 # never overwrite an existing non-None value with None, so
                 # locally computed localisation survives the weekly refresh.
@@ -431,6 +450,48 @@ class GWCrossMatchService:
 
         await session.commit()
         logger.info(f"Found {len(candidates)} candidates for {superevent_id}")
+        return candidates
+
+    async def get_stored_candidates(
+        self, session: AsyncSession, superevent_id: str
+    ) -> list[dict]:
+        """Read previously persisted cross-match candidates. Never writes.
+
+        Returns the ``GWCandidate`` rows for an event joined to ``objects``,
+        ordered by distance to the skymap peak. This is the read side of the
+        GET route: it never computes, inserts or commits. Candidates are
+        produced only by ``cross_match_event`` from the POST route.
+
+        Raises ValueError if the event does not exist (mapped to 404).
+        """
+        result = await session.execute(
+            select(GWEvent).where(GWEvent.superevent_id == superevent_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise ValueError(f"GW event {superevent_id} not found")
+
+        rows = await session.execute(
+            select(GWCandidate, Object)
+            .join(Object, GWCandidate.oid == Object.oid)
+            .where(GWCandidate.superevent_id == superevent_id)
+            .order_by(GWCandidate.distance_to_peak_arcsec)
+        )
+
+        candidates = []
+        for cand, obj in rows.all():
+            dist_arcsec = cand.distance_to_peak_arcsec
+            candidates.append({
+                "oid": obj.oid,
+                "ra": obj.ra,
+                "dec": obj.dec,
+                "classification": obj.classification,
+                "probability": obj.classification_probability,
+                "n_detections": obj.n_detections,
+                "distance_deg": round(dist_arcsec / 3600.0, 3) if dist_arcsec is not None else None,
+                "distance_arcsec": round(dist_arcsec, 1) if dist_arcsec is not None else None,
+                "cross_match": obj.cross_match_name,
+                "probability_in_skymap": cand.probability_in_skymap,
+            })
         return candidates
 
     async def get_all_events(self, session: AsyncSession) -> list[dict]:

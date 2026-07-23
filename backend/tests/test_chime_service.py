@@ -61,7 +61,7 @@ def test_extract_missing_mjd_still_works():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 — localization uncertainty columns (e_RAJ2000 / e_DEJ2000)
+# Localization uncertainty columns (e_RAJ2000 / e_DEJ2000)
 # ---------------------------------------------------------------------------
 
 def test_extract_localization_uncertainty():

@@ -1,5 +1,5 @@
 """
-Unit tests for app/ingestion/scheduler.py (repair-pass Task 6).
+Unit tests for app/ingestion/scheduler.py: CHIME scheduling.
 
 CHIME/FRB Catalog 1 is static, so it must not be pulled on every ingestion
 cycle. It now runs as its own monthly job with an idempotent manual trigger.

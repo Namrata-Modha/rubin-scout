@@ -6,8 +6,6 @@ Rubin Scout aggregates transient detections from multiple sky surveys and gravit
 
 Rubin Scout is designed for students, citizen scientists, and researchers new to time-domain and multi-messenger astronomy who want a single environment for exploring transient alerts, gravitational wave events, and optical follow-up planning — without needing separate subscriptions to professional broker infrastructure.
 
-The platform is under active development toward a public release.
-
 **Live:** https://rubin-scout.vercel.app  
 **API docs:** https://rubin-scout.vercel.app/api/docs  
 **Version:** v0.1
@@ -24,7 +22,7 @@ The platform is under active development toward a public release.
 | [GWOSC / GWTC](https://gwosc.org) | Full GWTC catalog of GW events (GPS→UTC, all versions) | Weekly refresh |
 | [SIMBAD](https://simbad.u-strasbg.fr) | Catalog cross-matches within 5 arcsec | Per new object |
 | [Legacy Survey](https://www.legacysurvey.org) | Optical cutout images | On demand |
-| [CHIME/FRB](https://www.chime-frb.ca) | Fast Radio Burst catalog (Catalog 1 ingested; real-time VOEvent subscription pending) | Static + pending real-time |
+| [CHIME/FRB](https://www.chime-frb.ca) | Fast Radio Burst catalog (Catalog 1, 536 FRBs, with positional uncertainties) | Monthly refresh + manual trigger (`POST /api/ingest/chime/trigger`) |
 
 ---
 
@@ -47,7 +45,7 @@ external_id)`; every insert uses `ON CONFLICT DO NOTHING` so reruns are safe. A
 90-day retention window keeps the table under ~72 MB on Supabase free tier.
 
 **Gravitational wave counterpart search**  
-All public LIGO/Virgo/KAGRA events from GWOSC are ingested automatically. For localized events the PostGIS `ST_DWithin` query finds optical transients within the 90% credible region detected within a configurable time window around the GW trigger.
+All public LIGO/Virgo/KAGRA events from GWTC (GWOSC) are ingested automatically, and the counterpart-search infrastructure — a PostGIS `ST_DWithin` query that finds optical transients within a skymap's credible region and persists them as candidates — is in place. However, sky-localization ingestion (parsing per-event skymaps into each event's centre and 90% area) is **not yet implemented**, so no ingested event currently carries localization. Until it lands, `POST /api/gw/events/{id}/crossmatch` returns **HTTP 422** (localization unavailable) rather than a spatially unfiltered candidate list. `GET /api/gw/events/{id}/candidates` reads any previously computed candidates.
 
 **Observatory visibility planning**  
 `GET /api/alerts/{oid}/visibility` computes an hourly altitude curve, astronomical dark window (sun < −18°), moon separation, and observable flag (target > 30° for ≥1 hr during dark time) for any observer location. Built-in presets:
@@ -74,6 +72,8 @@ GET /api/ilmt/followup          ILMT follow-up planner (ZTF history, SIMBAD, GW 
 GET /api/observatories          Observatory preset list
 GET /api/gw/events              All GW events with candidate counts
 POST /api/gw/events/{id}/crossmatch  Run GW-optical counterpart search
+GET /api/gw/events/{id}/candidates   Read stored counterpart candidates
+POST /api/ingest/chime/trigger  Manually trigger CHIME/FRB catalog ingestion (idempotent)
 GET /api/health/ping            Keep-alive / uptime check
 ```
 
@@ -98,8 +98,6 @@ pytest tests/test_validation.py -v
 ```bash
 pytest tests/ --cov=app --cov-report=term-missing
 ```
-
-Requirements: pytest and pytest-cov must be installed. Add both to requirements.txt if not already present.
 
 ---
 
@@ -162,6 +160,18 @@ rubin-scout/
 
 ---
 
+## Contributing
+
+Contributions are welcome — code, documentation, bug reports, and ideas alike.
+
+- **How to contribute:** Fork the repo, create a branch off `main`, make focused commits with tests for backend logic, run `cd backend && ruff check app/` and `pytest tests/ -v`, then open a pull request against `main`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow and areas where help is especially welcome.
+- **How to report an issue:** Open a [GitHub issue](https://github.com/Namrata-Modha/rubin-scout/issues) with a clear description and steps to reproduce, labelled `bug`, `feature`, `documentation`, or `question`.
+- **How to get support:** Ask a question by opening a GitHub issue with the `question` label, or start a discussion on the repository. For anything security-sensitive, see the Security section in [CONTRIBUTING.md](CONTRIBUTING.md) rather than filing a public issue.
+
+All participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
 ## Attribution
 
 If you use Rubin Scout data in research, cite the upstream sources:
@@ -173,7 +183,8 @@ If you use Rubin Scout data in research, cite the upstream sources:
 - SIMBAD: Wenger et al. (2000), A&AS, 143, 9
 
 ---
-<h5>Unlike primary brokers, Rubin Scout is a downstream aggregator — it ingests classified alert streams from Fink/ZTF and catalog feeds from TNS and ALeRCE, rather than processing raw telescope data. Observatory visibility planning is embedded directly alongside alert data so researchers do not need a separate Target Observation Manager instance.</h5>
+
+Unlike primary brokers, Rubin Scout is a downstream aggregator — it ingests classified alert streams from Fink/ZTF and catalog feeds from TNS and ALeRCE, rather than processing raw telescope data. Observatory visibility planning is embedded directly alongside alert data so researchers do not need a separate Target Observation Manager instance.
 
 *Rubin Scout is an independent open-source project and is not affiliated with the Vera C. Rubin Observatory or the LSST project.*
 

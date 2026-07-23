@@ -265,7 +265,7 @@ def test_pick_score_missing_field_returns_none():
 
 
 # --------------------------------------------------------------------------- #
-# Task 7 — the 90-day retention DELETE must be gone                           #
+# The 90-day retention DELETE must be gone                                     #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio

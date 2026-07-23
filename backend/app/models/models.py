@@ -44,11 +44,24 @@ class Object(Base):
     host_galaxy_name = Column(String)
     host_galaxy_redshift = Column(Float)
     dispersion_measure = Column(Float, nullable=True)
-    # Per-axis sky-localization uncertainty in degrees (1-sigma).  Populated for
-    # CHIME/FRB rows from VizieR e_RAJ2000 / e_DEJ2000 (J/ApJS/257/59/table2);
-    # NULL for optical sources whose positions are effectively exact for
-    # cross-matching.  FRB regions are large (~arcminutes) and must not be
-    # cross-matched at optical (arcsec) tolerances.
+    # Per-axis sky-localization uncertainty, DEGREES ON SKY (great-circle
+    # angular width), 1-sigma. Populated for CHIME/FRB rows from VizieR
+    # e_RAJ2000 / e_DEJ2000 (J/ApJS/257/59/table2); NULL for optical sources
+    # whose positions are effectively exact for cross-matching.
+    #
+    # UNIT CONVENTION (resolved empirically): ra_err_deg is an ON-SKY angle, NOT
+    # degrees of RA coordinate. Across the full VizieR table e_RAJ2000 is flat
+    # with declination (correlation with |dec| = 0.002; mean ~0.16 deg in every
+    # |dec| bin including 60-90 deg), and its median ~11 arcmin matches CHIME's
+    # ~15 arcmin beam scale. Were it degrees-of-RA it would inflate as 1/cos(dec)
+    # at high dec, and applying cos(dec) would shrink it to ~5 arcmin, below the
+    # instrument scale. => Do NOT apply a cos(dec) correction; the stored value
+    # is already the on-sky width and can be used directly as a match radius.
+    #
+    # Catalog 1 tabulates the extent of the 68% confidence interval NEAREST the
+    # strongest detection beam. The true regions are disjoint contours that can
+    # include near side lobes (published on TNS). The stored value is therefore
+    # a single-beam 68% half-width, NOT the full localization region.
     ra_err_deg = Column(Float, nullable=True)
     dec_err_deg = Column(Float, nullable=True)
     broker_source = Column(String, default="tns")

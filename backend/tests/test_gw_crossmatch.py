@@ -17,8 +17,9 @@ from app.enrichment.gw_crossmatch import (
     GWCrossMatchService,
     LocalizationUnavailableError,
     _classify_from_masses,
+    _is_broken_skymap_url,
 )
-from app.models.models import GWEvent
+from app.models.models import GWCandidate, GWEvent, Object
 
 # ---------------------------------------------------------------------------
 # _classify_from_masses
@@ -72,7 +73,7 @@ def test_sky_separation_gw170817():
 
 
 # ---------------------------------------------------------------------------
-# Task 1 — cross_match_event must refuse events with no localization
+# cross_match_event must refuse events with no localization
 # ---------------------------------------------------------------------------
 
 def _session_returning(scalar):
@@ -88,8 +89,8 @@ def _session_returning(scalar):
 async def test_cross_match_raises_without_localization():
     """An event with ra_center/dec_center None must raise, never return rows.
 
-    This is the core Task 1 guarantee: a spatially unfiltered candidate list
-    is scientifically invalid and must not be produced.
+    This is the core guarantee: a spatially unfiltered candidate list is
+    scientifically invalid and must not be produced.
     """
     svc = GWCrossMatchService()
     event = GWEvent(
@@ -118,7 +119,7 @@ def test_search_by_time_only_is_deleted():
 
 
 # ---------------------------------------------------------------------------
-# Task 2 / Task 3 — seed_gw_events upsert + null skymap_url
+# seed_gw_events upsert + null skymap_url
 # ---------------------------------------------------------------------------
 
 _NEW_EVENT = {
@@ -142,9 +143,9 @@ _NEW_EVENT = {
 
 @pytest.mark.asyncio
 async def test_seed_updates_existing_and_preserves_local_fields(monkeypatch):
-    """Task 2: an existing row is refreshed (far/classification/properties),
-    Task 3: skymap_url is set to None, and locally computed localisation is
-    preserved rather than clobbered by the incoming Nones."""
+    """An existing row is refreshed (far/classification/properties), skymap_url
+    is set to None, and locally computed localisation is preserved rather than
+    clobbered by the incoming Nones."""
     svc = GWCrossMatchService()
 
     async def fake_fetch():
@@ -188,7 +189,7 @@ async def test_seed_updates_existing_and_preserves_local_fields(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_seed_inserts_new_with_null_skymap(monkeypatch):
-    """Task 3: newly inserted events store skymap_url = None (no wrong URL)."""
+    """Newly inserted events store skymap_url = None (no wrong URL)."""
     svc = GWCrossMatchService()
 
     async def fake_fetch():
@@ -211,3 +212,120 @@ async def test_seed_inserts_new_with_null_skymap(monkeypatch):
     assert len(added) == 1
     assert added[0].skymap_url is None
     assert added[0].superevent_id == "GW150914"
+
+
+# ---------------------------------------------------------------------------
+# skymap_url is not clobbered unconditionally
+# ---------------------------------------------------------------------------
+
+def test_is_broken_skymap_url():
+    assert _is_broken_skymap_url(None) is True
+    assert _is_broken_skymap_url(
+        "https://gracedb.ligo.org/apiweb/superevents/GW170817/files/bayestar.multiorder.fits"
+    ) is True
+    assert _is_broken_skymap_url(
+        "https://zenodo.org/records/8177023/files/IGWN-GWTC3p0-v2-PESkyLocalizations.tar.gz"
+    ) is False
+
+
+async def _run_seed_against_existing(monkeypatch, existing):
+    svc = GWCrossMatchService()
+
+    async def fake_fetch():
+        return [_NEW_EVENT]
+
+    monkeypatch.setattr(
+        "app.enrichment.gw_crossmatch.fetch_gwosc_events", fake_fetch
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    await svc.seed_gw_events(session)
+    return existing
+
+
+@pytest.mark.asyncio
+async def test_seed_preserves_locally_set_skymap_url(monkeypatch):
+    """A real (locally-ingested) skymap URL must survive the weekly refresh.
+
+    The incoming GWOSC payload has no skymap, so a non-broken existing URL must
+    be left untouched.
+    """
+    real_url = (
+        "https://zenodo.org/records/8177023/files/"
+        "IGWN-GWTC3p0-v2-PESkyLocalizations.tar.gz#GW150914"
+    )
+    existing = GWEvent(
+        superevent_id="GW150914",
+        far=9.9,
+        classification={"STALE": 1.0},
+        skymap_url=real_url,
+        properties={"ra_center": 150.0, "dec_center": -70.0},
+    )
+    await _run_seed_against_existing(monkeypatch, existing)
+    assert existing.skymap_url == real_url  # preserved
+
+
+@pytest.mark.asyncio
+async def test_seed_clears_broken_gracedb_skymap_url(monkeypatch):
+    """A legacy broken GraceDB URL must still be cleared to None on refresh."""
+    existing = GWEvent(
+        superevent_id="GW150914",
+        far=9.9,
+        classification={"STALE": 1.0},
+        skymap_url="https://gracedb.ligo.org/apiweb/superevents/GW150914/files/bayestar.multiorder.fits",
+        properties={},
+    )
+    await _run_seed_against_existing(monkeypatch, existing)
+    assert existing.skymap_url is None  # cleared
+
+
+# ---------------------------------------------------------------------------
+# GET candidates is a pure read (no compute / insert / commit)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_stored_candidates_is_read_only():
+    svc = GWCrossMatchService()
+
+    event = GWEvent(superevent_id="GW150914", properties={})
+    cand = GWCandidate(
+        superevent_id="GW150914", oid="ZTF1",
+        distance_to_peak_arcsec=42.0, probability_in_skymap=0.8,
+    )
+    obj = Object(
+        oid="ZTF1", ra=1.0, dec=2.0, classification="SNIa",
+        classification_probability=0.9, n_detections=3, cross_match_name="NGC-x",
+    )
+
+    event_result = MagicMock()
+    event_result.scalar_one_or_none.return_value = event
+    rows_result = MagicMock()
+    rows_result.all.return_value = [(cand, obj)]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[event_result, rows_result])
+
+    candidates = await svc.get_stored_candidates(session, "GW150914")
+
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c["oid"] == "ZTF1"
+    assert c["distance_arcsec"] == 42.0
+    assert c["distance_deg"] == round(42.0 / 3600.0, 3)
+    assert c["probability_in_skymap"] == 0.8
+    # Pure read: never commits, never inserts.
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_stored_candidates_missing_event_raises():
+    svc = GWCrossMatchService()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    with pytest.raises(ValueError):
+        await svc.get_stored_candidates(session, "GW999999")
+    session.commit.assert_not_called()

@@ -93,22 +93,30 @@ async def run_cross_match(
 @router.get("/events/{superevent_id}/candidates")
 @limiter.limit("30/minute")
 async def get_candidates(request: Request, superevent_id: str, db: AsyncSession = Depends(get_db)):
-    """Get counterpart candidates for a GW event."""
+    """Read stored counterpart candidates for a GW event.
+
+    This is a pure read: it returns candidates already persisted by a prior
+    POST /crossmatch run and never computes, inserts or commits. When no
+    cross-match has been run yet it returns an empty list with
+    ``cross_match_run: false`` rather than a 404, so the UI can distinguish
+    "not run yet" from "event does not exist" (a genuine 404).
+    """
     try:
         superevent_id = validate_superevent_id(superevent_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid superevent ID format")
 
     try:
-        candidates = await gw_service.cross_match_event(db, superevent_id)
-    except LocalizationUnavailableError as e:
-        # 422: sky localization not available — see run_cross_match note.
-        raise HTTPException(status_code=422, detail=str(e))
+        candidates = await gw_service.get_stored_candidates(db, superevent_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
     return {
         "superevent_id": superevent_id,
+        # Inferred from persisted rows: we have no dedicated "last cross-matched"
+        # column, so a run that genuinely found zero candidates also reports
+        # false. A gw_events.last_crossmatch_at column would disambiguate.
+        "cross_match_run": len(candidates) > 0,
         "n_candidates": len(candidates),
         "candidates": candidates,
     }
