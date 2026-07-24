@@ -52,10 +52,11 @@ async def run_ingestion_cycle():
             tns_count = await tns_service.ingest_from_daily_csv(session)
             logger.info(f"✓ Ingested {tns_count} objects from TNS")
 
-            # FRBs: Pull CHIME/FRB catalog detections
-            logger.info("Fetching FRBs from CHIME/FRB catalog...")
-            chime_count = await chime_service.ingest(session)
-            logger.info(f"✓ Ingested {chime_count} FRBs from CHIME/FRB")
+            # NOTE: CHIME/FRB is deliberately NOT ingested here. Catalog 1 is a
+            # static 2021 data release, so pulling it every cycle re-downloaded
+            # the full VizieR VOTable ~96x/day for data that never changes. It
+            # now runs on its own monthly cron job (run_chime_ingestion) plus an
+            # idempotent manual trigger (POST /api/ingest/chime/trigger).
 
             # ENRICHMENT: Pull light curves and classifications from ALeRCE
             logger.info("Enriching with ALeRCE data...")
@@ -65,11 +66,17 @@ async def run_ingestion_cycle():
             )
             logger.info(f"✓ Enriched {alerce_count} objects with ALeRCE data")
 
-            # ENRICHMENT: Cross-match with SIMBAD for catalog associations
+            # ENRICHMENT: Cross-match with SIMBAD for catalog associations.
+            # FRBs are excluded: CHIME/FRB positions are ~arcminute-scale, so a
+            # 5-arcsec SIMBAD cone search (~180x tighter than the uncertainty)
+            # would only ever surface chance coincidences dressed up as
+            # associations. See EnrichmentService.enrich_batch for the matching
+            # defensive guard.
             logger.info("Cross-matching with SIMBAD...")
             result = await session.execute(
                 select(Object)
                 .where(Object.cross_match_catalog.is_(None))
+                .where(Object.classification.is_distinct_from("FRB"))
                 .order_by(Object.created_at.desc())
                 .limit(50)
             )
@@ -108,6 +115,23 @@ async def refresh_gw_events():
             logger.info(f"✓ GW refresh complete: {count} new events seeded")
         except Exception as e:
             logger.error(f"✗ GW event refresh failed: {e}", exc_info=True)
+
+
+async def run_chime_ingestion():
+    """Ingest the static CHIME/FRB Catalog 1 from VizieR.
+
+    Catalog 1 is a one-off 2021 data release, so this runs on a monthly cron
+    rather than every ingestion cycle. ``ChimeFRBIngestionService.ingest`` is
+    idempotent (per-oid upsert), so the monthly run and the manual trigger are
+    both safe to re-run at any time.
+    """
+    logger.info("Starting CHIME/FRB catalog ingestion...")
+    async with async_session() as session:
+        try:
+            count = await chime_service.ingest(session)
+            logger.info(f"✓ CHIME/FRB ingestion complete: {count} FRBs upserted")
+        except Exception as e:
+            logger.error(f"✗ CHIME/FRB ingestion failed: {e}", exc_info=True)
 
 
 async def run_fink_ingestion():
@@ -161,6 +185,20 @@ def start_background_scheduler():
         replace_existing=True,
     )
 
+    # CHIME/FRB Catalog 1 — static 2021 release, refresh monthly (1st, 03:00 UTC).
+    # An idempotent manual trigger is also exposed at POST /api/ingest/chime/trigger.
+    _scheduler.add_job(
+        run_chime_ingestion,
+        "cron",
+        day=1,
+        hour=3,
+        minute=0,
+        timezone="UTC",
+        id="chime_ingestion",
+        name="CHIME/FRB Catalog Ingestion",
+        replace_existing=True,
+    )
+
     # Re-seed GW events from GWOSC weekly to pick up new catalog releases
     _scheduler.add_job(
         refresh_gw_events,
@@ -192,6 +230,7 @@ def start_background_scheduler():
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
     logger.info("  - Fink/ZTF live alert ingestion (daily 10:00 UTC)")
+    logger.info("  - CHIME/FRB catalog ingestion (monthly, 1st 03:00 UTC)")
     logger.info("  - GWOSC GW event refresh (weekly)")
     logger.info("  - Database keep-alive ping (every 4 min)")
     logger.info("=" * 60)

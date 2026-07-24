@@ -6,6 +6,7 @@ to add context to each alert: is this a known source? Is it near a galaxy?
 Has it already been reported by another group?
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -26,6 +27,12 @@ except Exception:
     pass  # Newer astroquery versions include these by default
 Simbad.TIMEOUT = 10
 
+# Politeness delay between successive SIMBAD cone searches. SIMBAD asks clients
+# not to hammer the service; one query per second is well within their limits
+# while keeping a 50-object batch bounded (~50s of wall clock, none of it
+# blocking the event loop because the query itself runs in a worker thread).
+SIMBAD_RATE_LIMIT_SECONDS = 1.0
+
 
 class EnrichmentService:
     """Enriches alert objects with cross-catalog information."""
@@ -40,8 +47,12 @@ class EnrichmentService:
             ra: Right Ascension in degrees.
             dec: Declination in degrees.
         """
-        # SIMBAD cross-match
-        simbad_result = self._query_simbad(ra, dec, radius_arcsec=5.0)
+        # SIMBAD cross-match. Simbad.query_region is a synchronous, network-
+        # blocking call; run it in a worker thread so the asyncio event loop
+        # (and the whole API) stays responsive during ingestion.
+        simbad_result = await asyncio.to_thread(
+            self._query_simbad, ra, dec, 5.0
+        )
 
         if simbad_result:
             await session.execute(
@@ -95,18 +106,36 @@ class EnrichmentService:
             return None
 
     async def enrich_batch(self, session: AsyncSession, objects: list[Object]):
-        """Enrich a batch of objects. Rate-limits SIMBAD queries."""
+        """Enrich a batch of objects against SIMBAD.
+
+        Rate limiting: a real ``asyncio.sleep`` of ``SIMBAD_RATE_LIMIT_SECONDS``
+        is awaited after each SIMBAD query so the service is not hammered. The
+        sleep is non-blocking, so the event loop remains free for API traffic.
+        (The previous implementation only called ``session.flush()`` every 10
+        objects — a database flush, which is not rate limiting at all.)
+
+        FRBs are skipped: CHIME/FRB positions carry ~arcminute uncertainty, far
+        larger than the 5-arcsec SIMBAD cone, so any match would be a chance
+        coincidence. This mirrors the exclusion in the scheduler query and
+        guards callers that reach this method by another path.
+        """
         enriched = 0
         for obj in objects:
             if obj.cross_match_catalog:
                 continue  # Already enriched
 
+            if obj.classification == "FRB":
+                continue  # Positional uncertainty too large for a 5-arcsec match
+
             await self.enrich_object(session, obj.oid, obj.ra, obj.dec)
             enriched += 1
 
-            # SIMBAD rate limiting: don't hammer the service
+            # Periodically flush accumulated updates to bound the transaction.
             if enriched % 10 == 0:
                 await session.flush()
+
+            # SIMBAD rate limiting: space out successive queries.
+            await asyncio.sleep(SIMBAD_RATE_LIMIT_SECONDS)
 
         await session.commit()
         logger.info(f"Enriched {enriched}/{len(objects)} objects with SIMBAD data")

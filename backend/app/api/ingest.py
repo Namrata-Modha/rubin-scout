@@ -62,6 +62,23 @@ async def trigger_fink_ingestion(
     return {"status": "ok", "alerts_inserted": count}
 
 
+@router.post("/chime/trigger", dependencies=[Depends(require_admin_key)])
+@limiter.limit("5/minute")
+async def trigger_chime_ingestion(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a CHIME/FRB catalog ingestion run.
+
+    Idempotent: the service upserts per oid, so re-running never duplicates
+    rows. Use this instead of waiting for the monthly scheduled job.
+    """
+    from app.ingestion.chime_service import ChimeFRBIngestionService
+    service = ChimeFRBIngestionService()
+    count = await service.ingest(db)
+    return {"status": "ok", "source": "chimefrb_catalog", "frbs_ingested": count}
+
+
 @router.post("/admin/backfill-tns-photometry", dependencies=[Depends(require_admin_key)])
 @limiter.limit("5/minute")
 async def backfill_tns_photometry(

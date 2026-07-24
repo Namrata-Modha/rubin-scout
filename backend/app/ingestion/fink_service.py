@@ -6,8 +6,10 @@ four classification classes, strips heavy light-curve feature blobs from
 the payload, maps fields onto AlertLive rows, and inserts them with
 ON CONFLICT DO NOTHING so reruns are always safe.
 
-One IngestionLog row is written per run.  A 90-day retention DELETE runs
-after every insert batch to keep the table bounded.
+One IngestionLog row is written per run.  Rows in alerts_live are retained
+indefinitely: each row is one nightly detection (keyed on candid), so the
+table is the per-object classification-score time series and must never be
+pruned by record.
 
 Endpoint: https://api.ztf.fink-portal.org/api/v1/latests
 Confirmed reachable from Render's network during Sprint 4 testing.
@@ -18,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,7 +138,8 @@ class FinkIngestionService:
           2. Fetch ``ALERTS_PER_CLASS`` alerts per class from Fink.
           3. Insert each alert with ``ON CONFLICT DO NOTHING``.
           4. Write one ``IngestionLog`` row with outcome.
-          5. Delete ``alerts_live`` rows older than 90 days.
+
+        Rows are never deleted — alerts_live is an append-only detection log.
 
         Returns:
             Number of rows **actually inserted** (duplicate skips excluded).
@@ -184,16 +187,14 @@ class FinkIngestionService:
                             exc,
                         )
 
-            # 90-day retention cap — Supabase free tier is 500 MB total.
-            # At ~400 new rows/night, keeping 90 days costs ~72 MB.
-            # Remove this line if Rubin Scout moves to paid/institutional hosting.
-            # No user input involved — interval is hardcoded, not interpolated.
-            await session.execute(
-                text(
-                    "DELETE FROM alerts_live "
-                    "WHERE ingested_at < NOW() - INTERVAL '90 days'"
-                )
-            )
+            # NOTE: rows in alerts_live are never deleted. Each row is one
+            # nightly detection (keyed on candid), so the table IS the
+            # classification-score time series — the most valuable data we hold.
+            # A previous 90-day retention DELETE here would have destroyed that
+            # history on a rolling basis; it has been removed. Storage is
+            # reclaimed later by trimming raw_payload on old rows once its
+            # display keys are promoted to typed columns — never by dropping
+            # records.
 
             log.objects_ingested = inserted
             log.completed_at = datetime.now(timezone.utc)

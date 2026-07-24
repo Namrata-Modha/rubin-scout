@@ -9,8 +9,23 @@ VizieR catalog column mapping (J/ApJS/257/59/table2):
   Name      - TNS name (e.g. "FRB20180725A")
   RAJ2000   - Right Ascension (degrees, J2000)
   DEJ2000   - Declination (degrees, J2000)
+  e_RAJ2000 - Right Ascension 1-sigma uncertainty, ON-SKY degrees (see below)
+  e_DEJ2000 - Declination 1-sigma uncertainty, on-sky degrees (see catalog §3.2)
   DM        - Dispersion measure (pc/cm³, BONSAI pipeline value)
   MJD400    - MJD of detection (referenced to 400.1953125 MHz, DM=0)
+
+CHIME/FRB Catalog 1 positions are beam-S/N derived and only accurate to
+~arcminutes (the published e_RAJ2000 / e_DEJ2000 range up to ~0.4-0.5 deg),
+so these uncertainties are persisted (as ra_err_deg / dec_err_deg) and must
+gate any cross-match radius.
+
+UNIT of e_RAJ2000 (resolved empirically — see models.Object): it is an ON-SKY
+angular width, NOT degrees of RA coordinate. e_RAJ2000 is flat with declination
+across the full catalog (correlation with |dec| = 0.002), so NO cos(dec)
+correction is applied at ingest; the stored value is already the on-sky width.
+Note also that Catalog 1 reports the 68% interval nearest the strongest beam;
+true regions are disjoint contours including side lobes (on TNS), so the stored
+value is a single-beam half-width, not the full localization region.
 
 CHIME is a Canadian telescope at DRAO Penticton, British Columbia.
 """
@@ -144,6 +159,22 @@ class ChimeFRBIngestionService:
         if ra == 0.0 and dec == 0.0:
             return None
 
+        # Localization uncertainty (degrees, 1-sigma). Optional — some rows may
+        # lack an error estimate; store None rather than a false zero.
+        def _opt_float(key: str) -> Optional[float]:
+            raw = row.get(key)
+            if raw is None:
+                return None
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                return None
+            # VizieR uses NaN for absent numeric cells after pandas conversion.
+            return None if val != val else val
+
+        ra_err_deg = _opt_float("e_RAJ2000")
+        dec_err_deg = _opt_float("e_DEJ2000")
+
         # Dispersion measure
         dm = None
         dm_raw = row.get("DM")
@@ -168,6 +199,8 @@ class ChimeFRBIngestionService:
             "oid": oid,
             "ra": ra,
             "dec": dec,
+            "ra_err_deg": ra_err_deg,
+            "dec_err_deg": dec_err_deg,
             "dispersion_measure": dm,
             "mjd": mjd,
             "detection_time": detection_time,
@@ -188,6 +221,8 @@ class ChimeFRBIngestionService:
             oid=oid,
             ra=ra,
             dec=dec,
+            ra_err_deg=fields["ra_err_deg"],
+            dec_err_deg=fields["dec_err_deg"],
             first_detection=detection_time,
             last_detection=detection_time,
             n_detections=1,
@@ -199,6 +234,8 @@ class ChimeFRBIngestionService:
         ).on_conflict_do_update(
             index_elements=["oid"],
             set_={
+                "ra_err_deg": fields["ra_err_deg"],
+                "dec_err_deg": fields["dec_err_deg"],
                 "dispersion_measure": fields["dispersion_measure"],
                 "updated_at": datetime.now(timezone.utc),
             },

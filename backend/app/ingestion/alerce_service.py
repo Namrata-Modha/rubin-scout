@@ -8,6 +8,7 @@ This is the polling-based approach for the MVP. Week 5 of the roadmap
 replaces this with a real-time Kafka consumer.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -117,7 +118,10 @@ class AlerceIngestionService:
         count = 0
 
         try:
-            objects_df = self.client.query_objects(
+            # query_objects is a synchronous, network-blocking HTTP call; run it
+            # in a worker thread so the asyncio event loop stays responsive.
+            objects_df = await asyncio.to_thread(
+                self.client.query_objects,
                 classifier="lc_classifier",
                 class_name=class_name,
                 format="pandas",
@@ -196,7 +200,10 @@ class AlerceIngestionService:
     async def _store_detections(self, session: AsyncSession, oid: str):
         """Pull light curve from ALeRCE and store detection records."""
         try:
-            detections_df = self.client.query_detections(oid, format="pandas", sort="mjd")
+            # Blocking HTTP call — offload to a worker thread (see _ingest_class).
+            detections_df = await asyncio.to_thread(
+                self.client.query_detections, oid, format="pandas", sort="mjd"
+            )
         except Exception as e:
             logger.warning(f"Failed to fetch detections for {oid}: {e}")
             return
@@ -237,7 +244,8 @@ class AlerceIngestionService:
     async def _store_probabilities(self, session: AsyncSession, oid: str):
         """Pull classification probabilities and store them."""
         try:
-            probs = self.client.query_probabilities(oid)
+            # Blocking HTTP call — offload to a worker thread (see _ingest_class).
+            probs = await asyncio.to_thread(self.client.query_probabilities, oid)
         except Exception:
             return
 

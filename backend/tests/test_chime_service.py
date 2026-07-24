@@ -58,3 +58,32 @@ def test_extract_missing_mjd_still_works():
     result = service._extract_fields(row)
     assert result is not None
     assert result["detection_time"] is None
+
+
+# ---------------------------------------------------------------------------
+# Localization uncertainty columns (e_RAJ2000 / e_DEJ2000)
+# ---------------------------------------------------------------------------
+
+def test_extract_localization_uncertainty():
+    row = {"Name": "FRB20180725A", "RAJ2000": 106.5, "DEJ2000": -3.2,
+           "e_RAJ2000": 0.25, "e_DEJ2000": 0.30, "DM": 716.6, "MJD400": 58324.0}
+    result = service._extract_fields(row)
+    assert result["ra_err_deg"] == pytest.approx(0.25)
+    assert result["dec_err_deg"] == pytest.approx(0.30)
+
+
+def test_extract_missing_uncertainty_returns_none():
+    row = {"Name": "FRB20180725A", "RAJ2000": 106.5, "DEJ2000": -3.2,
+           "DM": 716.6, "MJD400": 58324.0}
+    result = service._extract_fields(row)
+    assert result["ra_err_deg"] is None
+    assert result["dec_err_deg"] is None
+
+
+def test_extract_nan_uncertainty_returns_none():
+    row = {"Name": "FRB20180725A", "RAJ2000": 106.5, "DEJ2000": -3.2,
+           "e_RAJ2000": float("nan"), "e_DEJ2000": float("nan"),
+           "DM": 716.6, "MJD400": 58324.0}
+    result = service._extract_fields(row)
+    assert result["ra_err_deg"] is None
+    assert result["dec_err_deg"] is None

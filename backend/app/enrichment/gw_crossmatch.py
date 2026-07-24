@@ -25,11 +25,36 @@ from app.models.models import GWCandidate, GWEvent, Object
 
 logger = logging.getLogger(__name__)
 
-# Public GW events from GWTC catalogs (no authentication needed)
-GRACEDB_PUBLIC_URL = "https://gracedb.ligo.org/apiweb/superevents"
+
+class LocalizationUnavailableError(Exception):
+    """Raised when a GW event has no usable sky localization.
+
+    A gravitational-wave cross-match is only scientifically meaningful with a
+    spatial (skymap) term.  When ``properties.ra_center`` / ``dec_center`` are
+    absent we must fail explicitly rather than return a spatially unfiltered
+    candidate list, so the API can surface a distinct 4xx to the caller.
+    """
+
 
 # GWOSC public catalog API
 GWOSC_API_URL = "https://gwosc.org/eventapi/json/allevents/"
+
+# skymap_url is stored as None: the flat v1 GWOSC catalog fetched here carries
+# no skymap, and the GraceDB apiweb URL this code once built (GWOSC commonName
+# mis-used as an S-prefixed superevent id) always 404s. Real skymaps live in the
+# GWOSC v2 API and per-catalog Zenodo tarballs; ingesting them is out of scope
+# for this module. Full details, verified URLs and DOIs: docs/gw-skymaps.md.
+
+# The known-broken skymap URL pattern this module used to write (GWOSC
+# commonName mis-used as a GraceDB superevent id). Rows still carrying it should
+# be cleared to None on refresh; any other (locally ingested) URL is preserved.
+_BROKEN_SKYMAP_PREFIX = "https://gracedb.ligo.org/apiweb/superevents/"
+
+
+def _is_broken_skymap_url(url: str | None) -> bool:
+    """True if `url` is the legacy guaranteed-404 GraceDB pattern (or None)."""
+    return url is None or url.startswith(_BROKEN_SKYMAP_PREFIX)
+
 
 # Human-readable descriptions for notable events only
 DESCRIPTIONS = {
@@ -61,6 +86,73 @@ DESCRIPTIONS = {
         "boundaries of what we thought possible for black hole mergers."
     ),
 }
+
+
+# GWOSC's `allevents/` feed mixes several tiers under a `catalog.shortName`
+# field: official LVK confident detections, official LVK sub-threshold
+# ("marginal") candidates, individual per-event discovery papers published
+# ahead of a cumulative catalog, a third-party (non-LVK) reanalysis catalog,
+# and at least one placeholder catalog GWOSC itself documents as containing
+# zero astrophysical detections. `fetch_gwosc_events()` used to ingest all of
+# these identically. Classified here so significance is recorded, not
+# discarded, and so non-detections/non-LVK entries can be excluded outright.
+#
+# CONFIDENT — official LVK confident/high-significance detection catalogs.
+# GWOSC's own catalog descriptions label GWTC-4.1 and GWTC-5.0 as "Confident
+# events from the O4a/O4b observing run" despite the shortName dropping the
+# "-confident" suffix used by older catalogs.
+_CONFIDENT_CATALOGS = frozenset({
+    "GWTC-1-confident", "GWTC-2", "GWTC-2.1-confident", "GWTC-3-confident",
+    "GWTC-4.0", "GWTC-4.1", "GWTC-5.0",
+})
+# MARGINAL — official LVK sub-threshold candidate catalogs. These are real
+# LVK-published products (from the GWTC catalog papers), just below the
+# significance threshold for a confident detection.
+_MARGINAL_CATALOGS = frozenset({
+    "GWTC-1-marginal", "GWTC-2.1-marginal", "GWTC-3-marginal", "O3_IMBH_marginal",
+})
+# PRELIMINARY — individual per-event LVK discovery papers published ahead of
+# a cumulative catalog release (e.g. GW231123, GW230529). Genuine detections,
+# just not yet folded into a catalog-level confident/marginal audit.
+_PRELIMINARY_CATALOGS = frozenset({
+    "O1_O2-Preliminary", "O3_Discovery_Papers", "O4_Discovery_Papers",
+})
+# EXCLUDED — not real LVK gravitational-wave detections, so never ingested:
+#   IAS-O3a            third-party (Institute for Advanced Study) reanalysis;
+#                       not an LVK data product.
+#   Initial_LIGO_Virgo  GWOSC's own description: "No astrophysical detections
+#                       were made during this period." Covers hardware
+#                       injection tests and GRB-counterpart search triggers
+#                       that GWOSC files under this catalog (verified: entries
+#                       named "blind_injection" and "GRB051103" both carry
+#                       this tag).
+#   GWTC-2.1-auxiliary  GWOSC's own description: candidates from GWTC-2 that,
+#                       per the GWTC-2.1 reanalysis, do NOT satisfy the
+#                       criteria for either GWTC-2.1-confident or
+#                       GWTC-2.1-marginal — i.e. actively downgraded below
+#                       even marginal status.
+_EXCLUDED_CATALOGS = frozenset({
+    "IAS-O3a", "Initial_LIGO_Virgo", "GWTC-2.1-auxiliary",
+})
+
+
+def _classify_significance(catalog_tag: str | None) -> str:
+    """Map a GWOSC `catalog.shortName` tag to a coarse significance tier.
+
+    Returns one of "confident", "marginal", "preliminary", "excluded", or
+    "unknown" for any tag not in the tables above — ingested but flagged
+    rather than silently miscounted as confident, so a future GWOSC catalog
+    name doesn't slip through uncategorized.
+    """
+    if catalog_tag in _CONFIDENT_CATALOGS:
+        return "confident"
+    if catalog_tag in _MARGINAL_CATALOGS:
+        return "marginal"
+    if catalog_tag in _PRELIMINARY_CATALOGS:
+        return "preliminary"
+    if catalog_tag in _EXCLUDED_CATALOGS:
+        return "excluded"
+    return "unknown"
 
 
 def _classify_from_masses(mass_1: float | None, mass_2: float | None) -> dict:
@@ -97,6 +189,11 @@ async def fetch_gwosc_events() -> list[dict]:
                                   mass_1_source, mass_2_source, ...}, ...}}
 
     Deduplicates by commonName, keeping the highest version number.
+    Classifies each event's `catalog.shortName` into a significance tier via
+    `_classify_significance()`, storing the result in `properties.significance`
+    (and the raw tag in `properties.catalog`). Events classified "excluded" —
+    non-LVK third-party catalogs and GWOSC's documented non-detection
+    placeholders — are dropped here and never reach the returned list.
     Returns a list of dicts ready to be upserted into the GWEvent table.
     Returns an empty list if GWOSC is unreachable.
     """
@@ -127,7 +224,15 @@ async def fetch_gwosc_events() -> list[dict]:
 
     result = []
     skipped = 0
+    excluded_by_tag: dict[str | None, int] = {}
     for common_name, evt in events_by_name.items():
+        catalog_tag = evt.get("catalog.shortName")
+        significance = _classify_significance(catalog_tag)
+
+        if significance == "excluded":
+            excluded_by_tag[catalog_tag] = excluded_by_tag.get(catalog_tag, 0) + 1
+            continue
+
         gps = evt.get("GPS")
         if gps is None:
             skipped += 1
@@ -161,6 +266,11 @@ async def fetch_gwosc_events() -> list[dict]:
             "mass_1_solar": float(mass_1) if mass_1 is not None else None,
             "mass_2_solar": float(mass_2) if mass_2 is not None else None,
             "description": DESCRIPTIONS.get(common_name),
+            # Significance tier ("confident" / "marginal" / "preliminary" /
+            # "unknown") and the raw GWOSC catalog tag it was derived from.
+            # See _classify_significance for the tier definitions.
+            "significance": significance,
+            "catalog": catalog_tag,
         }
 
         result.append({
@@ -171,9 +281,15 @@ async def fetch_gwosc_events() -> list[dict]:
             "properties": properties,
         })
 
+    n_excluded = sum(excluded_by_tag.values())
+    if n_excluded:
+        logger.info(
+            "Excluded %d non-detection/non-LVK entries by catalog tag: %s",
+            n_excluded, excluded_by_tag,
+        )
     logger.info(
-        "Fetched %d GW events from GWOSC (%d raw entries, %d skipped)",
-        len(result), len(raw_events), skipped,
+        "Fetched %d GW events from GWOSC (%d raw entries, %d skipped, %d excluded)",
+        len(result), len(raw_events), skipped, n_excluded,
     )
     return result
 
@@ -230,35 +346,82 @@ class GWCrossMatchService:
     """Cross-matches optical transients with gravitational wave events."""
 
     async def seed_gw_events(self, session: AsyncSession) -> int:
-        """Load GW events from GWOSC into the database. Upserts all events."""
+        """Load GW events from GWOSC into the database, upserting existing rows.
+
+        For a new ``superevent_id`` a fresh row is inserted.  For an existing
+        row the refreshable fields are updated so the weekly refresh actually
+        picks up revised GWOSC values:
+
+          Overwritten from GWOSC : ``far``, ``classification``
+          ``skymap_url`` : overwritten only when GWOSC supplies a value, or to
+              clear a legacy broken GraceDB URL; a real URL written locally by a
+              future skymap-ingestion job is preserved.
+          Merged into ``properties`` : every non-None value from the new
+              payload is written; an existing non-None value is NEVER clobbered
+              by an incoming None.  This refreshes catalog-derived fields
+              (distance, masses, description) while PRESERVING any locally
+              computed localisation (``ra_center`` / ``dec_center`` /
+              ``area_90_deg2``) that a future skymap-ingestion job may have
+              written — those are always None in the flat GWOSC catalog.
+          Preserved untouched : ``event_time``, ``created_at``.
+
+        Returns the number of rows inserted OR updated.
+        """
         events = await fetch_gwosc_events()
         if not events:
             logger.warning("No events returned from GWOSC; skipping seed")
             return 0
 
-        count = 0
+        inserted = 0
+        updated = 0
         for evt in events:
             superevent_id = evt["superevent_id"]
-            existing = await session.execute(
+            result = await session.execute(
                 select(GWEvent).where(GWEvent.superevent_id == superevent_id)
             )
-            if existing.scalar_one_or_none():
-                continue
+            existing = result.scalar_one_or_none()
 
-            gw = GWEvent(
-                superevent_id=superevent_id,
-                event_time=evt["event_time"],
-                far=evt["far"],
-                skymap_url=f"{GRACEDB_PUBLIC_URL}/{superevent_id}/files/bayestar.multiorder.fits",
-                classification=evt["classification"],
-                properties=evt["properties"],
-            )
-            session.add(gw)
-            count += 1
+            if existing is None:
+                gw = GWEvent(
+                    superevent_id=superevent_id,
+                    event_time=evt["event_time"],
+                    far=evt["far"],
+                    # No verified public skymap URL exists for this catalog;
+                    # store None (see docs/gw-skymaps.md).
+                    skymap_url=None,
+                    classification=evt["classification"],
+                    properties=evt["properties"],
+                )
+                session.add(gw)
+                inserted += 1
+            else:
+                existing.far = evt["far"]
+                existing.classification = evt["classification"]
+                # skymap_url follows the same "don't clobber good data" rule as
+                # properties. The flat GWOSC catalog carries no skymap, so the
+                # incoming value is None. Only overwrite when GWOSC actually
+                # provides a URL, OR to clear a legacy broken GraceDB URL. A real
+                # URL written locally by skymap ingestion survives.
+                incoming_skymap = evt.get("skymap_url")
+                if incoming_skymap is not None:
+                    existing.skymap_url = incoming_skymap
+                elif _is_broken_skymap_url(existing.skymap_url):
+                    existing.skymap_url = None
+                # Merge properties: refresh with incoming non-None values but
+                # never overwrite an existing non-None value with None, so
+                # locally computed localisation survives the weekly refresh.
+                merged = dict(existing.properties or {})
+                for key, value in (evt["properties"] or {}).items():
+                    if value is not None or key not in merged:
+                        merged[key] = value
+                existing.properties = merged
+                updated += 1
 
         await session.commit()
-        logger.info(f"Seeded {count} new GW events from GWOSC")
-        return count
+        logger.info(
+            "Seeded GW events from GWOSC: %d inserted, %d updated", inserted, updated
+        )
+        return inserted + updated
 
     async def cross_match_event(
         self,
@@ -296,9 +459,15 @@ class GWCrossMatchService:
         dec_center = props.get("dec_center")
 
         if ra_center is None or dec_center is None:
-            # Poorly localized event, search entire database within time window
-            logger.warning(f"{superevent_id} has no localization, searching by time only")
-            return await self._search_by_time_only(session, gw_event, time_window_days)
+            # A cross-match with no spatial term is scientifically invalid: it
+            # would return the highest-probability transients anywhere on the
+            # sky and mislabel them as counterparts.  Fail explicitly instead.
+            logger.warning(
+                "%s has no sky localization; refusing to cross-match", superevent_id
+            )
+            raise LocalizationUnavailableError(
+                f"Sky localization is not yet available for {superevent_id}"
+            )
 
         # Use the 90% credible area to set search radius if available
         area_90 = props.get("area_90_deg2", 0)
@@ -374,38 +543,47 @@ class GWCrossMatchService:
         logger.info(f"Found {len(candidates)} candidates for {superevent_id}")
         return candidates
 
-    async def _search_by_time_only(
-        self, session: AsyncSession, gw_event: GWEvent, time_window_days: float
+    async def get_stored_candidates(
+        self, session: AsyncSession, superevent_id: str
     ) -> list[dict]:
-        """For poorly localized events, search by time window only."""
-        event_time = gw_event.event_time
-        time_start = event_time - timedelta(days=7)
-        time_end = event_time + timedelta(days=time_window_days)
+        """Read previously persisted cross-match candidates. Never writes.
 
+        Returns the ``GWCandidate`` rows for an event joined to ``objects``,
+        ordered by distance to the skymap peak. This is the read side of the
+        GET route: it never computes, inserts or commits. Candidates are
+        produced only by ``cross_match_event`` from the POST route.
+
+        Raises ValueError if the event does not exist (mapped to 404).
+        """
         result = await session.execute(
-            select(Object)
-            .where(Object.last_detection >= time_start)
-            .where(Object.first_detection <= time_end)
-            .where(Object.classification.in_(["SNIa", "SNIbc", "SNII", "TDE", "KN", "CV/Nova"]))
-            .order_by(Object.classification_probability.desc())
-            .limit(50)
+            select(GWEvent).where(GWEvent.superevent_id == superevent_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise ValueError(f"GW event {superevent_id} not found")
+
+        rows = await session.execute(
+            select(GWCandidate, Object)
+            .join(Object, GWCandidate.oid == Object.oid)
+            .where(GWCandidate.superevent_id == superevent_id)
+            .order_by(GWCandidate.distance_to_peak_arcsec)
         )
 
-        return [
-            {
+        candidates = []
+        for cand, obj in rows.all():
+            dist_arcsec = cand.distance_to_peak_arcsec
+            candidates.append({
                 "oid": obj.oid,
                 "ra": obj.ra,
                 "dec": obj.dec,
                 "classification": obj.classification,
                 "probability": obj.classification_probability,
                 "n_detections": obj.n_detections,
-                "distance_deg": None,
-                "distance_arcsec": None,
+                "distance_deg": round(dist_arcsec / 3600.0, 3) if dist_arcsec is not None else None,
+                "distance_arcsec": round(dist_arcsec, 1) if dist_arcsec is not None else None,
                 "cross_match": obj.cross_match_name,
-                "in_90_region": None,  # Unknown without localization
-            }
-            for obj in result.scalars().all()
-        ]
+                "probability_in_skymap": cand.probability_in_skymap,
+            })
+        return candidates
 
     async def get_all_events(self, session: AsyncSession) -> list[dict]:
         """Get all GW events with their properties."""
@@ -460,3 +638,25 @@ class GWCrossMatchService:
             })
 
         return output
+
+    async def get_significance_counts(self, session: AsyncSession) -> dict[str, int]:
+        """Count ingested GW events by significance tier, queried live.
+
+        Reads `properties.significance` off every row in `gw_events` (a value
+        written by `fetch_gwosc_events`/`_classify_significance` at ingest
+        time — see there for tier definitions). Rows ingested before
+        significance tracking existed have no `significance` key and are
+        reported under "unclassified" so they are visible rather than silently
+        miscounted.
+
+        This is the queryable source of truth for "how many confident GW
+        events are ingested" — use this instead of a hardcoded number in the
+        README or paper; it reflects whatever is actually in the database
+        right now.
+        """
+        result = await session.execute(select(GWEvent.properties))
+        counts: dict[str, int] = {}
+        for (props,) in result.all():
+            tier = (props or {}).get("significance", "unclassified")
+            counts[tier] = counts.get(tier, 0) + 1
+        return counts
