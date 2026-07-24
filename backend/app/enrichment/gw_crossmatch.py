@@ -88,6 +88,73 @@ DESCRIPTIONS = {
 }
 
 
+# GWOSC's `allevents/` feed mixes several tiers under a `catalog.shortName`
+# field: official LVK confident detections, official LVK sub-threshold
+# ("marginal") candidates, individual per-event discovery papers published
+# ahead of a cumulative catalog, a third-party (non-LVK) reanalysis catalog,
+# and at least one placeholder catalog GWOSC itself documents as containing
+# zero astrophysical detections. `fetch_gwosc_events()` used to ingest all of
+# these identically. Classified here so significance is recorded, not
+# discarded, and so non-detections/non-LVK entries can be excluded outright.
+#
+# CONFIDENT — official LVK confident/high-significance detection catalogs.
+# GWOSC's own catalog descriptions label GWTC-4.1 and GWTC-5.0 as "Confident
+# events from the O4a/O4b observing run" despite the shortName dropping the
+# "-confident" suffix used by older catalogs.
+_CONFIDENT_CATALOGS = frozenset({
+    "GWTC-1-confident", "GWTC-2", "GWTC-2.1-confident", "GWTC-3-confident",
+    "GWTC-4.0", "GWTC-4.1", "GWTC-5.0",
+})
+# MARGINAL — official LVK sub-threshold candidate catalogs. These are real
+# LVK-published products (from the GWTC catalog papers), just below the
+# significance threshold for a confident detection.
+_MARGINAL_CATALOGS = frozenset({
+    "GWTC-1-marginal", "GWTC-2.1-marginal", "GWTC-3-marginal", "O3_IMBH_marginal",
+})
+# PRELIMINARY — individual per-event LVK discovery papers published ahead of
+# a cumulative catalog release (e.g. GW231123, GW230529). Genuine detections,
+# just not yet folded into a catalog-level confident/marginal audit.
+_PRELIMINARY_CATALOGS = frozenset({
+    "O1_O2-Preliminary", "O3_Discovery_Papers", "O4_Discovery_Papers",
+})
+# EXCLUDED — not real LVK gravitational-wave detections, so never ingested:
+#   IAS-O3a            third-party (Institute for Advanced Study) reanalysis;
+#                       not an LVK data product.
+#   Initial_LIGO_Virgo  GWOSC's own description: "No astrophysical detections
+#                       were made during this period." Covers hardware
+#                       injection tests and GRB-counterpart search triggers
+#                       that GWOSC files under this catalog (verified: entries
+#                       named "blind_injection" and "GRB051103" both carry
+#                       this tag).
+#   GWTC-2.1-auxiliary  GWOSC's own description: candidates from GWTC-2 that,
+#                       per the GWTC-2.1 reanalysis, do NOT satisfy the
+#                       criteria for either GWTC-2.1-confident or
+#                       GWTC-2.1-marginal — i.e. actively downgraded below
+#                       even marginal status.
+_EXCLUDED_CATALOGS = frozenset({
+    "IAS-O3a", "Initial_LIGO_Virgo", "GWTC-2.1-auxiliary",
+})
+
+
+def _classify_significance(catalog_tag: str | None) -> str:
+    """Map a GWOSC `catalog.shortName` tag to a coarse significance tier.
+
+    Returns one of "confident", "marginal", "preliminary", "excluded", or
+    "unknown" for any tag not in the tables above — ingested but flagged
+    rather than silently miscounted as confident, so a future GWOSC catalog
+    name doesn't slip through uncategorized.
+    """
+    if catalog_tag in _CONFIDENT_CATALOGS:
+        return "confident"
+    if catalog_tag in _MARGINAL_CATALOGS:
+        return "marginal"
+    if catalog_tag in _PRELIMINARY_CATALOGS:
+        return "preliminary"
+    if catalog_tag in _EXCLUDED_CATALOGS:
+        return "excluded"
+    return "unknown"
+
+
 def _classify_from_masses(mass_1: float | None, mass_2: float | None) -> dict:
     """
     Infer merger type from component masses (solar masses).
@@ -122,6 +189,11 @@ async def fetch_gwosc_events() -> list[dict]:
                                   mass_1_source, mass_2_source, ...}, ...}}
 
     Deduplicates by commonName, keeping the highest version number.
+    Classifies each event's `catalog.shortName` into a significance tier via
+    `_classify_significance()`, storing the result in `properties.significance`
+    (and the raw tag in `properties.catalog`). Events classified "excluded" —
+    non-LVK third-party catalogs and GWOSC's documented non-detection
+    placeholders — are dropped here and never reach the returned list.
     Returns a list of dicts ready to be upserted into the GWEvent table.
     Returns an empty list if GWOSC is unreachable.
     """
@@ -152,7 +224,15 @@ async def fetch_gwosc_events() -> list[dict]:
 
     result = []
     skipped = 0
+    excluded_by_tag: dict[str | None, int] = {}
     for common_name, evt in events_by_name.items():
+        catalog_tag = evt.get("catalog.shortName")
+        significance = _classify_significance(catalog_tag)
+
+        if significance == "excluded":
+            excluded_by_tag[catalog_tag] = excluded_by_tag.get(catalog_tag, 0) + 1
+            continue
+
         gps = evt.get("GPS")
         if gps is None:
             skipped += 1
@@ -186,6 +266,11 @@ async def fetch_gwosc_events() -> list[dict]:
             "mass_1_solar": float(mass_1) if mass_1 is not None else None,
             "mass_2_solar": float(mass_2) if mass_2 is not None else None,
             "description": DESCRIPTIONS.get(common_name),
+            # Significance tier ("confident" / "marginal" / "preliminary" /
+            # "unknown") and the raw GWOSC catalog tag it was derived from.
+            # See _classify_significance for the tier definitions.
+            "significance": significance,
+            "catalog": catalog_tag,
         }
 
         result.append({
@@ -196,9 +281,15 @@ async def fetch_gwosc_events() -> list[dict]:
             "properties": properties,
         })
 
+    n_excluded = sum(excluded_by_tag.values())
+    if n_excluded:
+        logger.info(
+            "Excluded %d non-detection/non-LVK entries by catalog tag: %s",
+            n_excluded, excluded_by_tag,
+        )
     logger.info(
-        "Fetched %d GW events from GWOSC (%d raw entries, %d skipped)",
-        len(result), len(raw_events), skipped,
+        "Fetched %d GW events from GWOSC (%d raw entries, %d skipped, %d excluded)",
+        len(result), len(raw_events), skipped, n_excluded,
     )
     return result
 
@@ -547,3 +638,25 @@ class GWCrossMatchService:
             })
 
         return output
+
+    async def get_significance_counts(self, session: AsyncSession) -> dict[str, int]:
+        """Count ingested GW events by significance tier, queried live.
+
+        Reads `properties.significance` off every row in `gw_events` (a value
+        written by `fetch_gwosc_events`/`_classify_significance` at ingest
+        time — see there for tier definitions). Rows ingested before
+        significance tracking existed have no `significance` key and are
+        reported under "unclassified" so they are visible rather than silently
+        miscounted.
+
+        This is the queryable source of truth for "how many confident GW
+        events are ingested" — use this instead of a hardcoded number in the
+        README or paper; it reflects whatever is actually in the database
+        right now.
+        """
+        result = await session.execute(select(GWEvent.properties))
+        counts: dict[str, int] = {}
+        for (props,) in result.all():
+            tier = (props or {}).get("significance", "unclassified")
+            counts[tier] = counts.get(tier, 0) + 1
+        return counts

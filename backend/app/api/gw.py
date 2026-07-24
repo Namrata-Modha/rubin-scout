@@ -38,6 +38,26 @@ async def list_gw_events(
     return {"total": total, "limit": limit, "offset": offset, "events": page_events}
 
 
+@router.get("/stats")
+@limiter.limit("60/minute")
+async def get_gw_stats(request: Request, db: AsyncSession = Depends(get_db)):
+    """Report ingested GW event counts by significance tier, queried live.
+
+    Significance ("confident" / "marginal" / "preliminary" / "unknown" /
+    "unclassified") is recorded per event at ingest time by
+    `fetch_gwosc_events`. This is the queryable source of truth for "how many
+    confident GW events does Rubin Scout ingest" — cite this endpoint rather
+    than a hardcoded number, since the underlying count changes as GWOSC
+    publishes new observing-run catalogs.
+    """
+    counts = await gw_service.get_significance_counts(db)
+    return {
+        "total": sum(counts.values()),
+        "by_significance": counts,
+        "confident_count": counts.get("confident", 0),
+    }
+
+
 @router.get("/events/{superevent_id}")
 @limiter.limit("60/minute")
 async def get_gw_event(request: Request, superevent_id: str, db: AsyncSession = Depends(get_db)):

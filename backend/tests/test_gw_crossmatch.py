@@ -17,7 +17,9 @@ from app.enrichment.gw_crossmatch import (
     GWCrossMatchService,
     LocalizationUnavailableError,
     _classify_from_masses,
+    _classify_significance,
     _is_broken_skymap_url,
+    fetch_gwosc_events,
 )
 from app.models.models import GWCandidate, GWEvent, Object
 
@@ -329,3 +331,148 @@ async def test_get_stored_candidates_missing_event_raises():
     with pytest.raises(ValueError):
         await svc.get_stored_candidates(session, "GW999999")
     session.commit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _classify_significance — GWOSC catalog.shortName -> significance tier
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tag,expected", [
+    ("GWTC-1-confident", "confident"),
+    ("GWTC-2", "confident"),
+    ("GWTC-2.1-confident", "confident"),
+    ("GWTC-3-confident", "confident"),
+    ("GWTC-4.1", "confident"),
+    ("GWTC-5.0", "confident"),
+    ("GWTC-1-marginal", "marginal"),
+    ("GWTC-2.1-marginal", "marginal"),
+    ("GWTC-3-marginal", "marginal"),
+    ("O3_IMBH_marginal", "marginal"),
+    ("O1_O2-Preliminary", "preliminary"),
+    ("O3_Discovery_Papers", "preliminary"),
+    ("O4_Discovery_Papers", "preliminary"),
+    ("IAS-O3a", "excluded"),
+    ("Initial_LIGO_Virgo", "excluded"),
+    ("GWTC-2.1-auxiliary", "excluded"),
+    ("SomeFutureCatalogGWOSCAddsLater", "unknown"),
+    (None, "unknown"),
+])
+def test_classify_significance(tag, expected):
+    assert _classify_significance(tag) == expected
+
+
+# ---------------------------------------------------------------------------
+# fetch_gwosc_events — excluded-tier events never reach the returned list,
+# and every surviving event carries its significance tier + raw catalog tag.
+# ---------------------------------------------------------------------------
+
+def _synthetic_gwosc_event(common_name: str, catalog_tag: str, version: int = 1) -> dict:
+    return {
+        "commonName": common_name,
+        "version": version,
+        "catalog.shortName": catalog_tag,
+        "GPS": 1187008882.4,
+        "far": 1e-7,
+        "luminosity_distance": 40.0,
+        "mass_1_source": 30.0,
+        "mass_2_source": 25.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_gwosc_events_excludes_non_lvk_and_non_detection(httpx_mock):
+    """IAS-O3a (third-party) and Initial_LIGO_Virgo (GWOSC: zero detections)
+    must never appear in the returned list; every other tier is kept and
+    tagged with its significance."""
+    payload = {
+        "events": {
+            "GWX-CONFIDENT-v1": _synthetic_gwosc_event("GWX-CONFIDENT", "GWTC-3-confident"),
+            "GWX-MARGINAL-v1": _synthetic_gwosc_event("GWX-MARGINAL", "GWTC-1-marginal"),
+            "GWX-PRELIM-v1": _synthetic_gwosc_event("GWX-PRELIM", "O4_Discovery_Papers"),
+            "GWX-UNKNOWN-v1": _synthetic_gwosc_event("GWX-UNKNOWN", "SomeFutureCatalog"),
+            "170817-v1": _synthetic_gwosc_event("blind_injection", "Initial_LIGO_Virgo"),
+            "IAS1-v1": _synthetic_gwosc_event("GWX-IAS", "IAS-O3a"),
+        }
+    }
+    httpx_mock.add_response(
+        method="GET",
+        url="https://gwosc.org/eventapi/json/allevents/",
+        json=payload,
+        status_code=200,
+    )
+
+    result = await fetch_gwosc_events()
+
+    by_id = {r["superevent_id"]: r for r in result}
+    assert "blind_injection" not in by_id  # Initial_LIGO_Virgo: excluded
+    assert "GWX-IAS" not in by_id           # IAS-O3a: excluded (third-party)
+    assert len(result) == 4
+
+    assert by_id["GWX-CONFIDENT"]["properties"]["significance"] == "confident"
+    assert by_id["GWX-CONFIDENT"]["properties"]["catalog"] == "GWTC-3-confident"
+    assert by_id["GWX-MARGINAL"]["properties"]["significance"] == "marginal"
+    assert by_id["GWX-PRELIM"]["properties"]["significance"] == "preliminary"
+    assert by_id["GWX-UNKNOWN"]["properties"]["significance"] == "unknown"
+    assert by_id["GWX-UNKNOWN"]["properties"]["catalog"] == "SomeFutureCatalog"
+
+
+# ---------------------------------------------------------------------------
+# get_significance_counts — live tally used by GET /api/gw/stats
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_significance_counts_tallies_by_tier():
+    svc = GWCrossMatchService()
+    rows = [
+        ({"significance": "confident"},),
+        ({"significance": "confident"},),
+        ({"significance": "marginal"},),
+        ({"significance": "preliminary"},),
+        ({},),          # ingested before significance tracking existed
+        (None,),        # properties column itself is NULL
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    counts = await svc.get_significance_counts(session)
+
+    assert counts == {
+        "confident": 2,
+        "marginal": 1,
+        "preliminary": 1,
+        "unclassified": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_gw_stats_route_uses_significance_counts(monkeypatch):
+    """GET /api/gw/stats reports a live confident_count derived from
+    get_significance_counts, not a hardcoded number."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    async def fake_counts(session):
+        return {"confident": 391, "marginal": 27, "preliminary": 1, "unknown": 5}
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "get_significance_counts", fake_counts)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/gw/stats")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["confident_count"] == 391
+    assert body["total"] == 391 + 27 + 1 + 5
+    assert body["by_significance"]["marginal"] == 27
