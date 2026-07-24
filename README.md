@@ -74,6 +74,7 @@ GET /api/alerts/conesearch/query PostGIS cone search (ra, dec, radius_arcsec)
 GET /api/ilmt/followup          ILMT follow-up planner (ZTF history, SIMBAD, GW coincidence, observatory visibility, recommendation)
 GET /api/observatories          Observatory preset list
 GET /api/gw/events              All GW events with candidate counts
+GET /api/gw/stats               Ingested GW event counts by significance tier
 POST /api/gw/events/{id}/crossmatch  Run GW-optical counterpart search
 GET /api/gw/events/{id}/candidates   Read stored counterpart candidates
 POST /api/ingest/chime/trigger  Manually trigger CHIME/FRB catalog ingestion (idempotent)
