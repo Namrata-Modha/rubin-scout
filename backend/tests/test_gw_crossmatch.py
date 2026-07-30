@@ -476,3 +476,163 @@ async def test_gw_stats_route_uses_significance_counts(monkeypatch):
     assert body["confident_count"] == 391
     assert body["total"] == 391 + 27 + 1 + 5
     assert body["by_significance"]["marginal"] == 27
+
+
+# ---------------------------------------------------------------------------
+# get_all_events — significance + catalog exposed per event (feeds both
+# GET /api/gw/events and GET /api/gw/events/{id}, which filters the same list)
+# ---------------------------------------------------------------------------
+
+def _events_result(events: list) -> MagicMock:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = events
+    return result
+
+
+def _empty_candidates_result() -> MagicMock:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    return result
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_includes_significance_and_catalog():
+    """A normally-ingested event surfaces its significance tier and raw
+    GWOSC catalog tag, matching the aggregate reported by GET /api/gw/stats."""
+    svc = GWCrossMatchService()
+    evt = GWEvent(
+        superevent_id="GW231123_135430",
+        event_time=datetime(2023, 11, 23, tzinfo=timezone.utc),
+        classification={"BBH": 1.0},
+        properties={"significance": "confident", "catalog": "GWTC-5.0"},
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[_events_result([evt]), _empty_candidates_result()]
+    )
+
+    output = await svc.get_all_events(session)
+
+    assert len(output) == 1
+    assert output[0]["significance"] == "confident"
+    assert output[0]["catalog"] == "GWTC-5.0"
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_unclassified_fallback_for_legacy_rows():
+    """A row ingested before significance tracking existed (no key in
+    properties at all) must report "unclassified" — never defaulted to a
+    real tier — matching the convention in get_significance_counts."""
+    svc = GWCrossMatchService()
+    evt = GWEvent(
+        superevent_id="GW150914",
+        event_time=datetime(2015, 9, 14, tzinfo=timezone.utc),
+        classification={"BBH": 1.0},
+        properties={"ra_center": None, "dec_center": None},  # no significance/catalog keys
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[_events_result([evt]), _empty_candidates_result()]
+    )
+
+    output = await svc.get_all_events(session)
+
+    assert output[0]["significance"] == "unclassified"
+    assert output[0]["catalog"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_null_properties_unclassified_fallback():
+    """properties itself can be NULL (not just missing keys) — must not raise."""
+    svc = GWCrossMatchService()
+    evt = GWEvent(
+        superevent_id="GW170817",
+        event_time=datetime(2017, 8, 17, tzinfo=timezone.utc),
+        classification={"BNS": 1.0},
+        properties=None,
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[_events_result([evt]), _empty_candidates_result()]
+    )
+
+    output = await svc.get_all_events(session)
+
+    assert output[0]["significance"] == "unclassified"
+    assert output[0]["catalog"] is None
+
+
+# ---------------------------------------------------------------------------
+# API-level: both GET /api/gw/events and GET /api/gw/events/{id} surface the
+# same significance/catalog fields, since the single-event route filters the
+# list returned by get_all_events rather than building its own dict.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_events_list_route_includes_significance(monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    async def fake_get_all_events(session):
+        return [{
+            "superevent_id": "GW231123_135430",
+            "event_time": "2023-11-23T13:54:30+00:00",
+            "significance": "confident",
+            "catalog": "GWTC-5.0",
+        }]
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "get_all_events", fake_get_all_events)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/gw/events")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    event = response.json()["events"][0]
+    assert event["significance"] == "confident"
+    assert event["catalog"] == "GWTC-5.0"
+
+
+@pytest.mark.asyncio
+async def test_single_event_route_includes_significance(monkeypatch):
+    """GET /api/gw/events/{id} filters get_all_events' list, so it must
+    surface the same significance/catalog fields for the matched event."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    async def fake_get_all_events(session):
+        return [{
+            "superevent_id": "GW150914",
+            "event_time": "2015-09-14T09:50:45+00:00",
+            "significance": "unclassified",
+            "catalog": None,
+        }]
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "get_all_events", fake_get_all_events)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/gw/events/GW150914")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["significance"] == "unclassified"
+    assert body["catalog"] is None
