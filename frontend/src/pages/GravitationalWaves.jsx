@@ -36,13 +36,6 @@ export default function GravitationalWaves() {
   const [searching, setSearching] = useState(false);
   const [significanceFilter, setSignificanceFilter] = useState("");
 
-  // Client-side filter over the currently loaded page only (frontend-only
-  // change — the API doesn't take a significance query param). Defaults to
-  // "" (All), so nothing is hidden unless the user opts in to a filter.
-  const visibleEvents = significanceFilter
-    ? events.filter((evt) => (evt.significance ?? "unclassified") === significanceFilter)
-    : events;
-
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
   const listTopRef = useRef(null);
 
@@ -52,11 +45,13 @@ export default function GravitationalWaves() {
       setError(null);
       try {
         const offset = (page - 1) * PER_PAGE;
-        let res = await getGWEvents({ limit: PER_PAGE, offset });
-        if (page === 1 && (!res.events || res.events.length === 0)) {
-          // Auto-seed on first visit when database is empty
+        let res = await getGWEvents({ limit: PER_PAGE, offset, significance: significanceFilter });
+        // Auto-seed on first visit when the database is empty — but only when
+        // no filter is active, otherwise a filter that legitimately matches
+        // zero events would be misread as "database is empty" and reseed.
+        if (page === 1 && !significanceFilter && (!res.events || res.events.length === 0)) {
           await seedGWEvents();
-          res = await getGWEvents({ limit: PER_PAGE, offset: 0 });
+          res = await getGWEvents({ limit: PER_PAGE, offset: 0, significance: significanceFilter });
         }
         setEvents(res.events || []);
         setTotal(res.total ?? res.events?.length ?? 0);
@@ -71,7 +66,13 @@ export default function GravitationalWaves() {
     if (page > 1) {
       listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [page]);
+  }, [page, significanceFilter]);
+
+  // Reset to page 1 when the significance filter changes, matching how
+  // Dashboard's filters reset pagination.
+  useEffect(() => {
+    setPage(1);
+  }, [significanceFilter]);
 
   const handleCrossMatch = async (supereventId) => {
     setSearching(true);
@@ -156,19 +157,10 @@ export default function GravitationalWaves() {
         })}
       </div>
 
-      {/* Total count */}
+      {/* Total count — already reflects the significance filter server-side */}
       {total > 0 && (
         <p className="text-xs text-white/30">
-          {significanceFilter ? (
-            <>
-              {visibleEvents.length} of {events.length} loaded event{events.length !== 1 ? "s" : ""} match
-              "{SIGNIFICANCE_INFO[significanceFilter]?.label}" ({total} total across all pages)
-            </>
-          ) : (
-            <>
-              {total} gravitational wave event{total !== 1 ? "s" : ""}
-            </>
-          )}
+          {total} gravitational wave event{total !== 1 ? "s" : ""}
         </p>
       )}
 
@@ -179,7 +171,7 @@ export default function GravitationalWaves() {
             <Loader2 className="w-5 h-5 text-white/30 animate-spin" />
           </div>
         ) : (
-          visibleEvents.map((evt) => {
+          events.map((evt) => {
             const style = TYPE_STYLES[evt.type_key] || TYPE_STYLES.BBH;
             const isSelected = selectedEvent === evt.superevent_id;
 
@@ -355,17 +347,17 @@ export default function GravitationalWaves() {
         )}
       </div>
 
-      {events.length === 0 && !loading && (
+      {events.length === 0 && !loading && !significanceFilter && (
         <div className="text-center py-12 text-white/30">
           <Waves className="w-8 h-8 mx-auto mb-3 opacity-30" />
           <p>No gravitational wave events loaded yet.</p>
         </div>
       )}
 
-      {events.length > 0 && visibleEvents.length === 0 && !loading && (
+      {events.length === 0 && !loading && significanceFilter && (
         <div className="text-center py-12 text-white/30">
           <p>
-            No "{SIGNIFICANCE_INFO[significanceFilter]?.label}" events on this page.
+            No {SIGNIFICANCE_INFO[significanceFilter]?.label.toLowerCase()} events found.
           </p>
           <button
             onClick={() => setSignificanceFilter("")}

@@ -60,9 +60,11 @@ export async function getClassifications() {
   return fetchJSON(`/classifications`);
 }
 
-/** Get gravitational wave events with optional pagination. */
-export async function getGWEvents({ limit = 20, offset = 0 } = {}) {
-  return fetchJSON(`/gw/events?limit=${limit}&offset=${offset}`);
+/** Get gravitational wave events with optional pagination and significance filter. */
+export async function getGWEvents({ limit = 20, offset = 0, significance = "" } = {}) {
+  const params = new URLSearchParams({ limit, offset });
+  if (significance) params.set("significance", significance);
+  return fetchJSON(`/gw/events?${params.toString()}`);
 }
 
 /** Get a single GW event. */
