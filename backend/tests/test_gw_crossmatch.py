@@ -912,11 +912,19 @@ async def test_events_route_rejects_invalid_significance(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_seed_route_calls_service_and_returns_its_result(monkeypatch):
+    """POST /api/gw/seed is require_admin_key-gated. That dependency only
+    bypasses the check when settings.app_env == "development" — CI runs with
+    APP_ENV=test and no ADMIN_API_KEY configured, so without overriding it
+    this route would 503 in CI ("Admin API key not configured") even though
+    the route itself works fine. This test is about seed_gw_events wiring,
+    not about auth, so require_admin_key is overridden exactly like get_db
+    is — a real caller's auth is a separate, already-decoupled concern."""
     from httpx import ASGITransport, AsyncClient
 
     from app.api import gw as gw_api
     from app.database import get_db
     from app.main import app
+    from app.security import require_admin_key
 
     calls = []
 
@@ -927,14 +935,19 @@ async def test_seed_route_calls_service_and_returns_its_result(monkeypatch):
     async def _mock_db():
         yield AsyncMock()
 
+    async def _bypass_admin_key():
+        return True
+
     monkeypatch.setattr(gw_api.gw_service, "seed_gw_events", fake_seed_gw_events)
     app.dependency_overrides[get_db] = _mock_db
+    app.dependency_overrides[require_admin_key] = _bypass_admin_key
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post("/api/gw/seed")
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(require_admin_key, None)
 
     assert response.status_code == 200
     assert len(calls) == 1  # seed_gw_events was actually invoked
