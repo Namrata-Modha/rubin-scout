@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.enrichment.gw_crossmatch import (
+    SIGNIFICANCE_TIERS,
     GWCrossMatchService,
     LocalizationUnavailableError,
 )
@@ -29,10 +30,28 @@ async def list_gw_events(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    significance: str | None = Query(
+        None,
+        description="Filter by significance tier: confident / marginal / "
+        "preliminary / unknown / unclassified",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """List gravitational wave events with pagination."""
-    all_events = await gw_service.get_all_events(db)
+    """List gravitational wave events with pagination, optionally filtered
+    by significance tier. When `significance` is given, `total` reflects the
+    filtered count, not the full table — pagination is applied after
+    filtering, not before.
+    """
+    if significance is not None and significance not in SIGNIFICANCE_TIERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid significance {significance!r}. "
+                f"Must be one of: {', '.join(sorted(SIGNIFICANCE_TIERS))}"
+            ),
+        )
+
+    all_events = await gw_service.get_all_events(db, significance=significance)
     total = len(all_events)
     page_events = all_events[offset : offset + limit]
     return {"total": total, "limit": limit, "offset": offset, "events": page_events}

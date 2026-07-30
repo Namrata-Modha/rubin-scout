@@ -576,7 +576,7 @@ async def test_events_list_route_includes_significance(monkeypatch):
     from app.database import get_db
     from app.main import app
 
-    async def fake_get_all_events(session):
+    async def fake_get_all_events(session, significance=None):
         return [{
             "superevent_id": "GW231123_135430",
             "event_time": "2023-11-23T13:54:30+00:00",
@@ -636,3 +636,154 @@ async def test_single_event_route_includes_significance(monkeypatch):
     body = response.json()
     assert body["significance"] == "unclassified"
     assert body["catalog"] is None
+
+
+# ---------------------------------------------------------------------------
+# Server-side significance filtering — GET /api/gw/events?significance=...
+# ---------------------------------------------------------------------------
+
+def _capturing_session(n_calls_beyond_events=0):
+    """AsyncMock session whose execute() records every query passed to it.
+
+    The first call is always the GWEvent select; each event thereafter also
+    triggers a GWCandidate count query, so callers with events must supply a
+    result stream long enough to cover those too.
+    """
+    captured = []
+
+    async def fake_execute(query):
+        captured.append(query)
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = []
+        return result
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=fake_execute)
+    return session, captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier", ["confident", "marginal", "preliminary", "unknown"])
+async def test_get_all_events_filters_by_named_tier_at_sql_level(tier):
+    """Each real tier value produces a WHERE clause equating
+    properties.significance to that tier — filtering happens in SQL, before
+    any pagination in the route, not by fetching everything and discarding."""
+    svc = GWCrossMatchService()
+    session, captured = _capturing_session()
+
+    await svc.get_all_events(session, significance=tier)
+
+    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert f"= '{tier}'" in compiled
+    assert "IS NULL" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_unclassified_filters_via_is_null():
+    """"unclassified" filters via IS NULL, not string equality — this is what
+    correctly matches both a NULL properties column and a properties dict
+    with no "significance" key (Postgres ->> propagates NULL through both)."""
+    svc = GWCrossMatchService()
+    session, captured = _capturing_session()
+
+    await svc.get_all_events(session, significance="unclassified")
+
+    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "IS NULL" in compiled
+    assert "= 'unclassified'" not in compiled
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_no_significance_arg_is_unfiltered():
+    """The default (no significance argument) must not add any WHERE clause
+    on properties.significance — existing callers see identical behavior."""
+    svc = GWCrossMatchService()
+    session, captured = _capturing_session()
+
+    await svc.get_all_events(session)
+
+    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "significance" not in compiled
+    assert "WHERE" not in compiled.upper()
+
+
+@pytest.mark.asyncio
+async def test_events_route_total_reflects_filtered_count(monkeypatch):
+    """GET /api/gw/events?significance=marginal reports `total` as the
+    filtered count, not the size of the full unfiltered table — pagination
+    math (offset/limit) operates on the already-filtered list."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    captured_significance = []
+
+    async def fake_get_all_events(session, significance=None):
+        captured_significance.append(significance)
+        if significance == "marginal":
+            # Only 3 marginal events exist, versus hundreds unfiltered.
+            return [
+                {"superevent_id": f"GWMARGINAL{i}", "event_time": None,
+                 "significance": "marginal", "catalog": "GWTC-1-marginal"}
+                for i in range(3)
+            ]
+        return [{"superevent_id": f"GW{i}", "event_time": None,
+                  "significance": "confident", "catalog": "GWTC-5.0"} for i in range(446)]
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "get_all_events", fake_get_all_events)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/gw/events", params={"significance": "marginal"})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert captured_significance == ["marginal"]  # the filter was actually threaded through
+    assert body["total"] == 3  # NOT 446 — total reflects the filtered set
+    assert len(body["events"]) == 3
+    assert all(e["significance"] == "marginal" for e in body["events"])
+
+
+@pytest.mark.asyncio
+async def test_events_route_rejects_invalid_significance(monkeypatch):
+    """An unrecognized significance value is rejected with 400, not silently
+    ignored (which would return the full unfiltered list under a filter the
+    caller thought was applied)."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    called = []
+
+    async def fake_get_all_events(session, significance=None):
+        called.append(significance)
+        return []
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "get_all_events", fake_get_all_events)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/gw/events", params={"significance": "extremely_confident"}
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 400
+    assert "extremely_confident" in response.json()["detail"]
+    # Validation must short-circuit before ever calling the service.
+    assert called == []

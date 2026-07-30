@@ -136,6 +136,19 @@ _EXCLUDED_CATALOGS = frozenset({
 })
 
 
+# The significance values that can actually appear on a stored GWEvent: the
+# four tiers _classify_significance can return for an ingested row ("excluded"
+# events are dropped at ingest and never reach the database — see
+# _EXCLUDED_CATALOGS — so it is deliberately not a valid filter value), plus
+# "unclassified" for rows ingested before significance tracking existed
+# (get_all_events/get_significance_counts report that as the fallback when
+# properties has no "significance" key). Query-param validation for
+# GET /api/gw/events reuses this exact set rather than duplicating it.
+SIGNIFICANCE_TIERS = frozenset({
+    "confident", "marginal", "preliminary", "unknown", "unclassified",
+})
+
+
 def _classify_significance(catalog_tag: str | None) -> str:
     """Map a GWOSC `catalog.shortName` tag to a coarse significance tier.
 
@@ -585,11 +598,31 @@ class GWCrossMatchService:
             })
         return candidates
 
-    async def get_all_events(self, session: AsyncSession) -> list[dict]:
-        """Get all GW events with their properties."""
-        result = await session.execute(
-            select(GWEvent).order_by(GWEvent.event_time.desc())
-        )
+    async def get_all_events(
+        self, session: AsyncSession, significance: str | None = None
+    ) -> list[dict]:
+        """Get all GW events with their properties.
+
+        When `significance` is given, filters at the SQL level to events whose
+        properties.significance matches — applied before the caller paginates,
+        so a filtered call's length reflects the filtered set, not the full
+        table. `significance="unclassified"` matches rows with no
+        "significance" key (or a NULL properties column): Postgres's ->>
+        operator propagates NULL through both a missing key and a NULL
+        left-hand side, so a single IS NULL check covers both, matching the
+        same fallback convention used below and in get_significance_counts.
+        Callers are responsible for validating `significance` is one of
+        SIGNIFICANCE_TIERS before calling this — see GET /api/gw/events.
+        """
+        query = select(GWEvent).order_by(GWEvent.event_time.desc())
+        if significance is not None:
+            sig_column = GWEvent.properties["significance"].astext
+            if significance == "unclassified":
+                query = query.where(sig_column.is_(None))
+            else:
+                query = query.where(sig_column == significance)
+
+        result = await session.execute(query)
         events = result.scalars().all()
 
         output = []
