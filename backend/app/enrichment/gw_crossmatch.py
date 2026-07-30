@@ -635,6 +635,16 @@ class GWCrossMatchService:
                 "distance_err_mpc": props.get("distance_err_mpc"),
                 "description": props.get("description") or _auto_description(dominant_type, props),
                 "n_candidates": n_candidates,
+                # Significance tier ("confident" / "marginal" / "preliminary" /
+                # "unknown"), matching the aggregate reported by
+                # get_significance_counts/GET /api/gw/stats. Rows ingested
+                # before significance tracking existed have no key in
+                # properties; report "unclassified" rather than defaulting to
+                # any real tier, same convention as get_significance_counts.
+                "significance": props.get("significance", "unclassified"),
+                # Raw GWOSC catalog tag this event was classified from (e.g.
+                # "GWTC-5.0", "GWTC-1-marginal"). None for pre-significance rows.
+                "catalog": props.get("catalog"),
             })
 
         return output
