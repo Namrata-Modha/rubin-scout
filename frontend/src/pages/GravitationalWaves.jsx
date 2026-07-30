@@ -3,8 +3,20 @@ import { Link } from "react-router-dom";
 import { Waves, Search, Loader2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { getGWEvents, crossMatchGWEvent, seedGWEvents } from "../lib/api";
 import { getClassInfo } from "../lib/cosmos";
+import SignificanceBadge, { SIGNIFICANCE_INFO, getSignificanceInfo } from "../components/SignificanceBadge";
 
 const PER_PAGE = 20;
+
+// Defaults to "" (All) — never hide marginal/preliminary/unclassified events
+// by default. Hiding them here would recreate, in the UI, the exact
+// overclaiming problem the significance tiering was built to eliminate.
+const SIGNIFICANCE_FILTERS = [
+  { label: "All", value: "" },
+  { label: "Confident", value: "confident" },
+  { label: "Marginal", value: "marginal" },
+  { label: "Preliminary", value: "preliminary" },
+  { label: "Unclassified", value: "unclassified" },
+];
 
 const TYPE_STYLES = {
   BNS: { emoji: "🔔", color: "#ffd43b", label: "Neutron Stars Colliding" },
@@ -22,6 +34,14 @@ export default function GravitationalWaves() {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [candidates, setCandidates] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [significanceFilter, setSignificanceFilter] = useState("");
+
+  // Client-side filter over the currently loaded page only (frontend-only
+  // change — the API doesn't take a significance query param). Defaults to
+  // "" (All), so nothing is hidden unless the user opts in to a filter.
+  const visibleEvents = significanceFilter
+    ? events.filter((evt) => (evt.significance ?? "unclassified") === significanceFilter)
+    : events;
 
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
   const listTopRef = useRef(null);
@@ -109,10 +129,46 @@ export default function GravitationalWaves() {
         </div>
       )}
 
+      {/* Significance filter — defaults to All; never hides tiers by default */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-white/30 uppercase tracking-wider mr-1">
+          Significance
+        </span>
+        {SIGNIFICANCE_FILTERS.map((f) => {
+          const isActive = significanceFilter === f.value;
+          const info = f.value ? getSignificanceInfo(f.value) : null;
+          const color = info?.color ?? "#748ffc";
+          return (
+            <button
+              key={f.value}
+              onClick={() => setSignificanceFilter(f.value)}
+              title={info?.description}
+              className="px-3 py-1.5 rounded-full text-xs transition-all border"
+              style={{
+                background: isActive ? color + "25" : "rgba(255,255,255,0.025)",
+                borderColor: isActive ? color + "50" : "rgba(255,255,255,0.06)",
+                color: isActive ? color : "rgba(255,255,255,0.45)",
+              }}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Total count */}
       {total > 0 && (
         <p className="text-xs text-white/30">
-          {total} gravitational wave event{total !== 1 ? "s" : ""}
+          {significanceFilter ? (
+            <>
+              {visibleEvents.length} of {events.length} loaded event{events.length !== 1 ? "s" : ""} match
+              "{SIGNIFICANCE_INFO[significanceFilter]?.label}" ({total} total across all pages)
+            </>
+          ) : (
+            <>
+              {total} gravitational wave event{total !== 1 ? "s" : ""}
+            </>
+          )}
         </p>
       )}
 
@@ -123,7 +179,7 @@ export default function GravitationalWaves() {
             <Loader2 className="w-5 h-5 text-white/30 animate-spin" />
           </div>
         ) : (
-          events.map((evt) => {
+          visibleEvents.map((evt) => {
             const style = TYPE_STYLES[evt.type_key] || TYPE_STYLES.BBH;
             const isSelected = selectedEvent === evt.superevent_id;
 
@@ -161,6 +217,7 @@ export default function GravitationalWaves() {
                           >
                             {style.label}
                           </span>
+                          <SignificanceBadge significance={evt.significance} />
                         </div>
                         <p className="text-xs text-white/40 mt-1 max-w-xl leading-relaxed">
                           {evt.description
@@ -207,6 +264,14 @@ export default function GravitationalWaves() {
                 {/* Expanded: cross-match panel */}
                 {isSelected && (
                   <div className="mt-2 bg-white/[0.02] border border-white/[0.06] rounded-xl p-5">
+                    {/* Detection significance — plain-language explanation, not just a badge */}
+                    <div className="flex items-start gap-2.5 mb-4">
+                      <SignificanceBadge significance={evt.significance} size="lg" />
+                      <p className="text-xs text-white/40 leading-relaxed mt-0.5">
+                        {getSignificanceInfo(evt.significance).description}
+                      </p>
+                    </div>
+
                     {evt.description && (
                       <p className="text-xs text-white/40 leading-relaxed mb-4">
                         {evt.description}
@@ -294,6 +359,20 @@ export default function GravitationalWaves() {
         <div className="text-center py-12 text-white/30">
           <Waves className="w-8 h-8 mx-auto mb-3 opacity-30" />
           <p>No gravitational wave events loaded yet.</p>
+        </div>
+      )}
+
+      {events.length > 0 && visibleEvents.length === 0 && !loading && (
+        <div className="text-center py-12 text-white/30">
+          <p>
+            No "{SIGNIFICANCE_INFO[significanceFilter]?.label}" events on this page.
+          </p>
+          <button
+            onClick={() => setSignificanceFilter("")}
+            className="text-xs text-indigo-300/60 hover:text-indigo-300 mt-2 underline"
+          >
+            Clear filter
+          </button>
         </div>
       )}
 
