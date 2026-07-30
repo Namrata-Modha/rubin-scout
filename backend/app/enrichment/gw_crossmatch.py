@@ -18,7 +18,7 @@ from datetime import timedelta, timezone
 
 import httpx
 from astropy.time import Time
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import GWCandidate, GWEvent, Object
@@ -599,28 +599,54 @@ class GWCrossMatchService:
         return candidates
 
     async def get_all_events(
-        self, session: AsyncSession, significance: str | None = None
-    ) -> list[dict]:
-        """Get all GW events with their properties.
+        self,
+        session: AsyncSession,
+        significance: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Get GW events with their properties, optionally filtered and paginated.
+
+        Returns ``(events, total)``. ``total`` is the COUNT(*) of rows
+        matching ``significance`` (before pagination); ``events`` is the
+        requested page, in event_time-descending order — or every matching
+        row when ``limit`` is None (used by the single-event route, which
+        needs to search across everything, not one page of it). Both the
+        COUNT query and the page query apply the identical WHERE clause, so
+        ``total`` and ``events`` are always consistent with each other.
+
+        Pagination is real SQL LIMIT/OFFSET, not an in-memory slice: only the
+        rows in the requested page are fetched, and the per-event candidate
+        count below only runs for those rows — not the full filtered set.
 
         When `significance` is given, filters at the SQL level to events whose
-        properties.significance matches — applied before the caller paginates,
-        so a filtered call's length reflects the filtered set, not the full
-        table. `significance="unclassified"` matches rows with no
-        "significance" key (or a NULL properties column): Postgres's ->>
-        operator propagates NULL through both a missing key and a NULL
-        left-hand side, so a single IS NULL check covers both, matching the
-        same fallback convention used below and in get_significance_counts.
+        properties.significance matches. `significance="unclassified"` matches
+        rows with no "significance" key (or a NULL properties column):
+        Postgres's ->> operator propagates NULL through both a missing key and
+        a NULL left-hand side, so a single IS NULL check covers both, matching
+        the same fallback convention used below and in get_significance_counts.
         Callers are responsible for validating `significance` is one of
         SIGNIFICANCE_TIERS before calling this — see GET /api/gw/events.
         """
-        query = select(GWEvent).order_by(GWEvent.event_time.desc())
+        where_clause = None
         if significance is not None:
             sig_column = GWEvent.properties["significance"].astext
-            if significance == "unclassified":
-                query = query.where(sig_column.is_(None))
-            else:
-                query = query.where(sig_column == significance)
+            where_clause = (
+                sig_column.is_(None)
+                if significance == "unclassified"
+                else sig_column == significance
+            )
+
+        count_query = select(func.count()).select_from(GWEvent)
+        if where_clause is not None:
+            count_query = count_query.where(where_clause)
+        total = (await session.execute(count_query)).scalar_one()
+
+        query = select(GWEvent).order_by(GWEvent.event_time.desc())
+        if where_clause is not None:
+            query = query.where(where_clause)
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
 
         result = await session.execute(query)
         events = result.scalars().all()
@@ -680,7 +706,7 @@ class GWCrossMatchService:
                 "catalog": props.get("catalog"),
             })
 
-        return output
+        return output, total
 
     async def get_significance_counts(self, session: AsyncSession) -> dict[str, int]:
         """Count ingested GW events by significance tier, queried live.

@@ -51,9 +51,9 @@ async def list_gw_events(
             ),
         )
 
-    all_events = await gw_service.get_all_events(db, significance=significance)
-    total = len(all_events)
-    page_events = all_events[offset : offset + limit]
+    page_events, total = await gw_service.get_all_events(
+        db, significance=significance, limit=limit, offset=offset
+    )
     return {"total": total, "limit": limit, "offset": offset, "events": page_events}
 
 
@@ -87,7 +87,7 @@ async def get_gw_event(request: Request, superevent_id: str, db: AsyncSession = 
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid superevent ID format")
 
-    events = await gw_service.get_all_events(db)
+    events, _ = await gw_service.get_all_events(db)
     event = next((e for e in events if e["superevent_id"] == superevent_id), None)
     if not event:
         raise HTTPException(status_code=404, detail="GW event not found")

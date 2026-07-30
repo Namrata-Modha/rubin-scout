@@ -495,6 +495,13 @@ def _empty_candidates_result() -> MagicMock:
     return result
 
 
+def _count_result(n: int) -> MagicMock:
+    """Mock result for the COUNT(*) query get_all_events now runs first."""
+    result = MagicMock()
+    result.scalar_one.return_value = n
+    return result
+
+
 @pytest.mark.asyncio
 async def test_get_all_events_includes_significance_and_catalog():
     """A normally-ingested event surfaces its significance tier and raw
@@ -508,12 +515,13 @@ async def test_get_all_events_includes_significance_and_catalog():
     )
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[_events_result([evt]), _empty_candidates_result()]
+        side_effect=[_count_result(1), _events_result([evt]), _empty_candidates_result()]
     )
 
-    output = await svc.get_all_events(session)
+    output, total = await svc.get_all_events(session)
 
     assert len(output) == 1
+    assert total == 1
     assert output[0]["significance"] == "confident"
     assert output[0]["catalog"] == "GWTC-5.0"
 
@@ -532,11 +540,12 @@ async def test_get_all_events_unclassified_fallback_for_legacy_rows():
     )
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[_events_result([evt]), _empty_candidates_result()]
+        side_effect=[_count_result(1), _events_result([evt]), _empty_candidates_result()]
     )
 
-    output = await svc.get_all_events(session)
+    output, total = await svc.get_all_events(session)
 
+    assert total == 1
     assert output[0]["significance"] == "unclassified"
     assert output[0]["catalog"] is None
 
@@ -553,11 +562,12 @@ async def test_get_all_events_null_properties_unclassified_fallback():
     )
     session = AsyncMock()
     session.execute = AsyncMock(
-        side_effect=[_events_result([evt]), _empty_candidates_result()]
+        side_effect=[_count_result(1), _events_result([evt]), _empty_candidates_result()]
     )
 
-    output = await svc.get_all_events(session)
+    output, total = await svc.get_all_events(session)
 
+    assert total == 1
     assert output[0]["significance"] == "unclassified"
     assert output[0]["catalog"] is None
 
@@ -576,13 +586,14 @@ async def test_events_list_route_includes_significance(monkeypatch):
     from app.database import get_db
     from app.main import app
 
-    async def fake_get_all_events(session, significance=None):
-        return [{
+    async def fake_get_all_events(session, significance=None, limit=None, offset=0):
+        events = [{
             "superevent_id": "GW231123_135430",
             "event_time": "2023-11-23T13:54:30+00:00",
             "significance": "confident",
             "catalog": "GWTC-5.0",
         }]
+        return events, len(events)
 
     async def _mock_db():
         yield AsyncMock()
@@ -613,12 +624,13 @@ async def test_single_event_route_includes_significance(monkeypatch):
     from app.main import app
 
     async def fake_get_all_events(session):
-        return [{
+        events = [{
             "superevent_id": "GW150914",
             "event_time": "2015-09-14T09:50:45+00:00",
             "significance": "unclassified",
             "catalog": None,
         }]
+        return events, len(events)
 
     async def _mock_db():
         yield AsyncMock()
@@ -645,9 +657,11 @@ async def test_single_event_route_includes_significance(monkeypatch):
 def _capturing_session(n_calls_beyond_events=0):
     """AsyncMock session whose execute() records every query passed to it.
 
-    The first call is always the GWEvent select; each event thereafter also
-    triggers a GWCandidate count query, so callers with events must supply a
-    result stream long enough to cover those too.
+    get_all_events issues, in order: the COUNT(*) query, then the paginated
+    GWEvent select, then one GWCandidate count query per returned event. Both
+    the COUNT and the GWEvent select carry the identical significance WHERE
+    clause, so captured[0] (the COUNT query) is sufficient for asserting the
+    filter predicate even though it isn't the events select itself.
     """
     captured = []
 
@@ -708,29 +722,33 @@ async def test_get_all_events_no_significance_arg_is_unfiltered():
 
 
 @pytest.mark.asyncio
-async def test_events_route_total_reflects_filtered_count(monkeypatch):
-    """GET /api/gw/events?significance=marginal reports `total` as the
-    filtered count, not the size of the full unfiltered table — pagination
-    math (offset/limit) operates on the already-filtered list."""
+async def test_events_route_passes_through_service_total_and_page(monkeypatch):
+    """GET /api/gw/events must return exactly what get_all_events reports —
+    no route-side len()-based total, no route-side re-slicing. get_all_events
+    now does real SQL pagination itself, so the route is a thin pass-through:
+    it forwards limit/offset/significance in and returns (events, total) out
+    unmodified."""
     from httpx import ASGITransport, AsyncClient
 
     from app.api import gw as gw_api
     from app.database import get_db
     from app.main import app
 
-    captured_significance = []
+    captured_args = []
 
-    async def fake_get_all_events(session, significance=None):
-        captured_significance.append(significance)
-        if significance == "marginal":
-            # Only 3 marginal events exist, versus hundreds unfiltered.
-            return [
-                {"superevent_id": f"GWMARGINAL{i}", "event_time": None,
-                 "significance": "marginal", "catalog": "GWTC-1-marginal"}
-                for i in range(3)
-            ]
-        return [{"superevent_id": f"GW{i}", "event_time": None,
-                  "significance": "confident", "catalog": "GWTC-5.0"} for i in range(446)]
+    async def fake_get_all_events(session, significance=None, limit=None, offset=0):
+        captured_args.append(
+            {"significance": significance, "limit": limit, "offset": offset}
+        )
+        # Simulate the last page of a 446-row filtered set: only 3 events on
+        # this page, but 446 matching rows overall. If the route recomputed
+        # total as len(events) or re-sliced the page itself, this would fail.
+        events = [
+            {"superevent_id": f"GW{i}", "event_time": None,
+             "significance": "marginal", "catalog": "GWTC-1-marginal"}
+            for i in range(3)
+        ]
+        return events, 446
 
     async def _mock_db():
         yield AsyncMock()
@@ -740,16 +758,112 @@ async def test_events_route_total_reflects_filtered_count(monkeypatch):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/gw/events", params={"significance": "marginal"})
+            response = await client.get(
+                "/api/gw/events",
+                params={"significance": "marginal", "limit": 20, "offset": 440},
+            )
     finally:
         app.dependency_overrides.pop(get_db, None)
 
     assert response.status_code == 200
     body = response.json()
-    assert captured_significance == ["marginal"]  # the filter was actually threaded through
-    assert body["total"] == 3  # NOT 446 — total reflects the filtered set
-    assert len(body["events"]) == 3
-    assert all(e["significance"] == "marginal" for e in body["events"])
+    # limit/offset/significance were forwarded to the service, not consumed
+    # by the route itself.
+    assert captured_args == [{"significance": "marginal", "limit": 20, "offset": 440}]
+    assert body["total"] == 446           # from the service, NOT len(events)
+    assert len(body["events"]) == 3       # exactly what the service returned, not re-sliced
+
+
+# ---------------------------------------------------------------------------
+# get_all_events — real SQL pagination: separate COUNT query + LIMIT/OFFSET,
+# not fetch-everything-then-slice-in-Python.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_all_events_total_comes_from_count_query_not_page_length():
+    """total must come from the COUNT(*) query's own result, not len(events)
+    — proven by mocking a COUNT result that differs from the number of event
+    rows actually returned, exactly as a non-final page would look."""
+    svc = GWCrossMatchService()
+    evt = GWEvent(
+        superevent_id="GW1", event_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        classification={"BBH": 1.0}, properties={"significance": "confident"},
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[_count_result(360), _events_result([evt]), _empty_candidates_result()]
+    )
+
+    events, total = await svc.get_all_events(session, significance="confident", limit=1, offset=0)
+
+    assert total == 360  # from the COUNT query, not len(events) == 1
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_limit_offset_produce_real_sql_pagination():
+    """Passing limit/offset produces a LIMIT/OFFSET clause on the events
+    SELECT (the second query issued) — real SQL pagination, not an in-memory
+    slice of a fully-fetched list. The COUNT query never carries LIMIT/OFFSET."""
+    svc = GWCrossMatchService()
+    session, captured = _capturing_session()
+
+    await svc.get_all_events(session, limit=20, offset=40)
+
+    events_query_sql = str(captured[1].compile(compile_kwargs={"literal_binds": True}))
+    assert "LIMIT 20" in events_query_sql
+    assert "OFFSET 40" in events_query_sql
+
+    count_query_sql = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "LIMIT" not in count_query_sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_no_limit_omits_sql_limit_clause():
+    """limit=None (the single-event route's use case, which must search
+    across every matching row rather than one page) must not add a LIMIT
+    clause at all."""
+    svc = GWCrossMatchService()
+    session, captured = _capturing_session()
+
+    await svc.get_all_events(session)
+
+    events_query_sql = str(captured[1].compile(compile_kwargs={"literal_binds": True}))
+    assert "LIMIT" not in events_query_sql.upper()
+    assert "OFFSET" not in events_query_sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_get_all_events_candidate_count_only_runs_for_returned_page():
+    """The per-event GWCandidate count query (an existing N+1 pattern,
+    unchanged here) must only execute once per event actually returned on
+    the page — not once per row in the full filtered set. With limit=2 and
+    a COUNT of 500 matching rows overall, exactly 2 candidate-count queries
+    run, proving the loop iterates the page, not the filtered total."""
+    svc = GWCrossMatchService()
+    evts = [
+        GWEvent(superevent_id=f"GW{i}", event_time=datetime(2020, 1, i + 1, tzinfo=timezone.utc),
+                classification={"BBH": 1.0}, properties={"significance": "confident"})
+        for i in range(2)
+    ]
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _count_result(500),          # COUNT: 500 matching rows total
+            _events_result(evts),        # events SELECT: only the 2-row page
+            _empty_candidates_result(),  # candidate count for evts[0]
+            _empty_candidates_result(),  # candidate count for evts[1]
+        ]
+    )
+
+    events, total = await svc.get_all_events(
+        session, significance="confident", limit=2, offset=0
+    )
+
+    assert total == 500
+    assert len(events) == 2
+    # COUNT + events SELECT + 2 candidate counts == 4, never 500 + 2.
+    assert session.execute.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -787,3 +901,43 @@ async def test_events_route_rejects_invalid_significance(monkeypatch):
     assert "extremely_confident" in response.json()["detail"]
     # Validation must short-circuit before ever calling the service.
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# POST /api/gw/seed — the existing manual trigger for seed_gw_events. No new
+# route was added: this endpoint already exists and already does exactly
+# what a "POST /api/ingest/gw/trigger" would (require_admin_key-gated,
+# calls seed_gw_events, returns a count) — see the deliverable report.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_seed_route_calls_service_and_returns_its_result(monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api import gw as gw_api
+    from app.database import get_db
+    from app.main import app
+
+    calls = []
+
+    async def fake_seed_gw_events(session):
+        calls.append(session)
+        return 12
+
+    async def _mock_db():
+        yield AsyncMock()
+
+    monkeypatch.setattr(gw_api.gw_service, "seed_gw_events", fake_seed_gw_events)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/gw/seed")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    assert len(calls) == 1  # seed_gw_events was actually invoked
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["events_seeded"] == 12  # the route returns the service's own result
