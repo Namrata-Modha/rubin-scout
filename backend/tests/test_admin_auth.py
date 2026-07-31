@@ -161,6 +161,7 @@ GATED_ROUTES = [
     ("POST", "/api/ingest/tns/daily", {}),
     ("POST", "/api/ingest/fink/trigger", {}),
     ("POST", "/api/ingest/chime/trigger", {}),
+    ("POST", "/api/ingest/lsst/trigger", {}),
     ("POST", "/api/ingest/admin/backfill-tns-photometry", {}),
     ("POST", "/api/subscriptions/", {"json": {"name": "Test Sub", "user_email": "test@example.com"}}),
     ("PATCH", "/api/subscriptions/1", {"json": {"active": False}}),
@@ -374,6 +375,38 @@ async def test_chime_trigger_correct_key_invokes_service(admin_auth_configured, 
     assert response.status_code == 200
     assert len(calls) == 1
     assert response.json()["frbs_ingested"] == 11
+
+
+@pytest.mark.asyncio
+async def test_lsst_trigger_correct_key_invokes_service(admin_auth_configured, monkeypatch):
+    """LsstFinkIngestionService is instantiated fresh inside the route body,
+    same as Fink/CHIME — patch the class method."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.database import get_db
+    from app.ingestion.lsst_service import LsstFinkIngestionService
+    from app.main import app
+
+    calls = []
+
+    async def fake_ingest(self, session):
+        calls.append(session)
+        return 4
+
+    monkeypatch.setattr(LsstFinkIngestionService, "ingest", fake_ingest)
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/ingest/lsst/trigger", headers={"X-API-Key": admin_auth_configured}
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert response.json()["alerts_inserted"] == 4
 
 
 @pytest.mark.asyncio
