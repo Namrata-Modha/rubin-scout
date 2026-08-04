@@ -79,6 +79,30 @@ async def trigger_chime_ingestion(
     return {"status": "ok", "source": "chimefrb_catalog", "frbs_ingested": count}
 
 
+@router.post("/lsst/trigger", dependencies=[Depends(require_admin_key)])
+@limiter.limit("5/minute")
+async def trigger_lsst_ingestion(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a Fink/LSST (Rubin) ingestion run.
+
+    Separate Fink deployment from ZTF (api.lsst.fink-portal.org, not
+    api.ztf.fink-portal.org) with a materially different alert schema and
+    discovery mechanism ("tags" instead of a single classification label) —
+    see app/ingestion/lsst_service.py's module docstring for the full field
+    comparison. Real date-windowed, cursor-paginated (not a fixed-count
+    fetch): LSST's confirmed nightly alert volume (up to ~745,000/night)
+    would make a fixed n=100 silently drop the overwhelming majority of a
+    night's alerts. Not yet wired into the automatic scheduler — this
+    manual trigger is the only way to run it during this pass.
+    """
+    from app.ingestion.lsst_service import LsstFinkIngestionService
+    service = LsstFinkIngestionService()
+    count = await service.ingest(db)
+    return {"status": "ok", "source": "fink_lsst", "alerts_inserted": count}
+
+
 @router.post("/admin/backfill-tns-photometry", dependencies=[Depends(require_admin_key)])
 @limiter.limit("5/minute")
 async def backfill_tns_photometry(

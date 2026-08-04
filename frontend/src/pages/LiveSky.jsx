@@ -2,10 +2,42 @@ import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Filter, RefreshCw, Activity, Star, Clock } from "lucide-react";
 import SkyMap from "../components/SkyMap";
+import SourceBadge, { getSourceInfo } from "../components/SourceBadge";
 import { getLiveAlerts, getLiveClassifications } from "../lib/api";
 import { getClassInfo, getConstellation, formatTimeSince } from "../lib/cosmos";
 
 const PER_PAGE = 50;
+
+// Defaults to "" (All surveys) — never hide either survey by default.
+const SURVEY_FILTERS = [
+  { label: "All surveys", value: "" },
+  { label: "ZTF", value: "ztf_fink" },
+  { label: "Rubin / LSST", value: "lsst_fink" },
+];
+
+// Survey-aware empty-state copy. A genuinely empty Rubin/LSST result reads
+// as ambiguous/broken without context: LSST ingestion isn't on the
+// automatic scheduler yet (manual trigger only, see lsst_service.py), so
+// "zero alerts" there is an expected, current state, not a failure.
+function emptyStateCopy(selectedSurvey) {
+  if (selectedSurvey === "lsst_fink") {
+    return {
+      title: "No Rubin/LSST alerts found.",
+      detail:
+        "Nothing's broken — Rubin/LSST ingestion isn't on the automatic schedule yet, it only runs when manually triggered, so there may simply be no run since the last one. Switch to \"All surveys\" to see ZTF alerts in the meantime.",
+    };
+  }
+  if (selectedSurvey === "ztf_fink") {
+    return {
+      title: "No ZTF alerts found.",
+      detail: "Try clearing the classification filter, or wait for the next 10:00 UTC ingestion run.",
+    };
+  }
+  return {
+    title: "No live alerts found.",
+    detail: "Try clearing the survey or classification filter, or wait for the next ingestion run.",
+  };
+}
 
 // ── Stats bar ─────────────────────────────────────────────────────────────────
 
@@ -30,7 +62,7 @@ function LiveStatsBar({ total, classifications, lastIngested, loading }) {
       color: "text-cosmos-400",
     },
     {
-      label: top ? top.classification : "Top Class",
+      label: top ? getClassInfo(top.classification).name : "Top Class",
       value: top ? top.count.toLocaleString() : "—",
       icon: Star,
       color: "text-yellow-400",
@@ -85,6 +117,7 @@ function LiveAlertCard({ alert }) {
           <p className="text-sm font-medium text-white/85">{info.name}</p>
           <p className="text-[11px] text-white/35 truncate">{info.short}</p>
         </div>
+        <SourceBadge alertType={alert.alert_type} />
       </div>
 
       {/* Coordinates + constellation */}
@@ -145,6 +178,7 @@ export default function LiveSky() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedClass, setSelectedClass] = useState("");
+  const [selectedSurvey, setSelectedSurvey] = useState("");
   const [page, setPage] = useState(1);
 
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
@@ -162,6 +196,7 @@ export default function LiveSky() {
           limit: PER_PAGE,
           offset,
           ...(selectedClass && { classification: selectedClass }),
+          ...(selectedSurvey && { alertType: selectedSurvey }),
         }),
         getLiveClassifications(),
       ]);
@@ -173,16 +208,25 @@ export default function LiveSky() {
     } finally {
       setLoading(false);
     }
-  }, [page, selectedClass]);
+  }, [page, selectedClass, selectedSurvey]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  // Reset to page 1 when filter changes
+  // Reset to page 1 when either filter changes
   useEffect(() => {
     setPage(1);
-  }, [selectedClass]);
+  }, [selectedClass, selectedSurvey]);
+
+  // Changing survey invalidates whatever classification was selected --
+  // ZTF's "SN candidate" isn't a valid filter once LSST-only is selected,
+  // and vice versa. Server-side filtering only ANDs the two, it can't
+  // reconcile a mismatched pair on its own.
+  const handleSurveyChange = (value) => {
+    setSelectedSurvey(value);
+    setSelectedClass("");
+  };
 
   // Auto-refresh every 60 seconds
   useEffect(() => {
@@ -197,7 +241,8 @@ export default function LiveSky() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Live Alert Stream</h1>
           <p className="text-sm text-white/40 mt-1">
-            Real-time transient alerts ingested from Fink broker (ZTF survey), updated daily at 10:00 UTC
+            Real-time transient alerts from Fink's ZTF and Rubin/LSST alert streams. ZTF updates
+            daily at 10:00 UTC; Rubin/LSST is ingested on demand ahead of scheduled ingestion.
           </p>
         </div>
         <button
@@ -218,26 +263,60 @@ export default function LiveSky() {
         loading={loading}
       />
 
-      {/* Classification filter buttons */}
+      {/* Survey filter buttons — server-side via alert_type, same pattern as
+          GW's significance filter. Selecting a survey resets the
+          classification filter (see handleSurveyChange). */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1.5">
           <Filter className="w-3.5 h-3.5 text-white/30" />
-          <span className="text-xs text-white/30 uppercase tracking-wider">Source</span>
+          <span className="text-xs text-white/30 uppercase tracking-wider">Survey</span>
         </div>
 
-        {/* "All" pill */}
+        {SURVEY_FILTERS.map((f) => {
+          const isActive = selectedSurvey === f.value;
+          const color = f.value ? getSourceInfo(f.value).color : "#748ffc";
+          return (
+            <button
+              key={f.value}
+              onClick={() => handleSurveyChange(f.value)}
+              className="px-3 py-1.5 rounded-full text-xs transition-all border"
+              style={{
+                background: isActive ? color + "25" : "rgba(255,255,255,0.025)",
+                borderColor: isActive ? color + "50" : "rgba(255,255,255,0.06)",
+                color: isActive ? color : "rgba(255,255,255,0.45)",
+              }}
+            >
+              {f.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Classification filter buttons — options narrow to the selected
+          survey; in "All surveys" each pill gets a small source-colored dot
+          so ZTF and LSST/Rubin labels stay visibly grouped, not silently
+          mixed (the two use incompatible classification vocabularies). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Filter className="w-3.5 h-3.5 text-white/30" />
+          <span className="text-xs text-white/30 uppercase tracking-wider">Classification</span>
+        </div>
+
         {[
-          { label: "All", value: "", emoji: "🌌", color: "#748ffc" },
-          ...classifications.map((c) => {
-            const info = getClassInfo(c.classification);
-            return {
-              label: info.name,
-              value: c.classification,
-              emoji: info.emoji,
-              color: info.color,
-              count: c.count,
-            };
-          }),
+          { label: "All", value: "", emoji: "🌌", color: "#748ffc", dot: null },
+          ...classifications
+            .filter((c) => !selectedSurvey || c.alert_type === selectedSurvey)
+            .map((c) => {
+              const info = getClassInfo(c.classification);
+              return {
+                label: info.name,
+                value: c.classification,
+                emoji: info.emoji,
+                color: info.color,
+                count: c.count,
+                dot: !selectedSurvey ? getSourceInfo(c.alert_type).color : null,
+              };
+            }),
         ].map((cat) => {
           const isActive = selectedClass === cat.value;
           return (
@@ -251,6 +330,12 @@ export default function LiveSky() {
                 color: isActive ? cat.color : "rgba(255,255,255,0.45)",
               }}
             >
+              {cat.dot && (
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ background: cat.dot }}
+                />
+              )}
               <span className="text-sm">{cat.emoji}</span>
               {cat.label}
               {cat.count != null && (
@@ -291,9 +376,9 @@ export default function LiveSky() {
       ) : alerts.length === 0 ? (
         <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-12 text-center">
           <p className="text-2xl mb-2">📡</p>
-          <p className="text-white/40">No live alerts found.</p>
+          <p className="text-white/40">{emptyStateCopy(selectedSurvey).title}</p>
           <p className="text-white/20 text-sm mt-1">
-            Try clearing the classification filter or wait for the next 10:00 UTC ingestion run.
+            {emptyStateCopy(selectedSurvey).detail}
           </p>
         </div>
       ) : (
@@ -359,8 +444,10 @@ export default function LiveSky() {
 
       {/* Footer */}
       <p className="text-[10px] text-white/20 text-center py-4">
-        Live alerts sourced from the Fink broker (Möller et al. 2021, MNRAS 501, 3272) processing
-        the Zwicky Transient Facility (ZTF) alert stream. Classifications by SuperNNova and random-forest ML pipelines.
+        Live alerts sourced from the Fink broker (Möller et al. 2021, MNRAS 501, 3272), processing
+        both the Zwicky Transient Facility (ZTF) alert stream (SuperNNova and random-forest
+        classifiers) and, via Fink's separate LSST deployment, the Vera C. Rubin Observatory's
+        Legacy Survey of Space and Time (tag-based discovery, SuperNNova and CATS classifiers).
       </p>
     </div>
   );

@@ -28,15 +28,31 @@ async def get_live_alerts(
     limit: int = Query(50, ge=1, le=200, description="Rows per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     classification: Optional[str] = Query(None, description="Filter by Fink classification label"),
+    alert_type: Optional[str] = Query(
+        None,
+        description="Filter by survey/pipeline, e.g. ztf_fink or lsst_fink",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return paginated rows from alerts_live, most recently detected first."""
+    """Return paginated rows from alerts_live, most recently detected first.
+
+    `alert_type` filters server-side (same pattern as GW's `significance`
+    query param) rather than client-side, so pagination totals stay correct
+    when combined with `classification` -- ZTF and LSST/Rubin alerts share
+    this table but use two incompatible classification vocabularies (see
+    lsst_service.py's module docstring), so a caller narrowing to one survey
+    needs the count/offset to reflect that survey alone, not the full table.
+    """
     stmt = select(AlertLive).order_by(AlertLive.detected_at.desc())
     count_stmt = select(func.count()).select_from(AlertLive)
 
     if classification:
         stmt = stmt.where(AlertLive.classification == classification)
         count_stmt = count_stmt.where(AlertLive.classification == classification)
+
+    if alert_type:
+        stmt = stmt.where(AlertLive.alert_type == alert_type)
+        count_stmt = count_stmt.where(AlertLive.alert_type == alert_type)
 
     stmt = stmt.limit(limit).offset(offset)
 
@@ -72,18 +88,35 @@ async def get_live_classifications(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Return distinct classification labels in alerts_live with row counts."""
+    """Return distinct (alert_type, classification) pairs in alerts_live with
+    row counts.
+
+    Grouped by alert_type as well as classification: ZTF and LSST/Rubin
+    alerts share this column but use two incompatible vocabularies (Fink's
+    fixed ZTF class strings vs. LSST's matched tag names -- see
+    lsst_service.py's module docstring). Without alert_type in each row, a
+    caller has no way to tell the two apart other than pattern-matching the
+    label text itself, which duplicates backend knowledge in the frontend.
+    """
     stmt = (
-        select(AlertLive.classification, func.count().label("count"))
+        select(
+            AlertLive.alert_type,
+            AlertLive.classification,
+            func.count().label("count"),
+        )
         .where(AlertLive.classification.isnot(None))
-        .group_by(AlertLive.classification)
+        .group_by(AlertLive.alert_type, AlertLive.classification)
         .order_by(func.count().desc())
     )
     result = await db.execute(stmt)
     rows = result.all()
 
     classifications = [
-        {"classification": row.classification, "count": row.count}
+        {
+            "classification": row.classification,
+            "alert_type": row.alert_type,
+            "count": row.count,
+        }
         for row in rows
     ]
     return {"classifications": classifications, "total": sum(r["count"] for r in classifications)}
