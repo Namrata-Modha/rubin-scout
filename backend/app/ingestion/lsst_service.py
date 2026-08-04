@@ -18,17 +18,57 @@ inside FinkIngestionService, because the two are not a drop-in match:
     ZTF exposes a single `v:classification` string per alert (SN candidate,
     Kilonova candidate, ...). LSST has no equivalent single-label field.
     Discovery instead happens via "tags" — named, curated alert-selection
-    filters — queried with `?tag=<name>`. As of this writing the available
-    tags are: extragalactic_lt20mag_candidate, extragalactic_new_candidate,
-    extragalactic_svom, hostless_candidate, in_tns, most_likely_sn,
-    remove_unlikely_transients, sn_near_galaxy_candidate, uniform_sample.
-    Several of these ("extragalactic_svom", "remove_unlikely_transients",
-    "uniform_sample") are documented but NOT yet queryable via the API
-    ("API support": false) — confirmed live via GET /api/v1/tags.
+    filters — queried with `?tag=<name>`. As of this writing, GET
+    /api/v1/tags (no params) lists nine defined tags total, of which SIX
+    report "API support": true (genuinely queryable) and three report false
+    (documented but not yet queryable) — confirmed live:
+
+      API-supported (6):
+        extragalactic_lt20mag_candidate  "rising, bright (mag < 20), and
+                                          extragalactic candidates"
+        extragalactic_new_candidate      "new (< 5 days first apparition),
+                                          bright (mag < 24), potentially
+                                          extragalactic with a fading or
+                                          rising rate passing the cuts"
+        hostless_candidate               "hostless according to ELEPHANT"
+        in_tns                           "known counterpart in TNS (AT or
+                                          confirmed) at the time of emission
+                                          by Rubin"
+        most_likely_sn                   "likely to be SN, based on
+                                          SuperNNova and CATS classifiers"
+        sn_near_galaxy_candidate         "matching in catalogs to a galaxy
+                                          and properties consistent with SNe"
+      NOT API-supported (3, excluded — no live query path exists):
+        extragalactic_svom, remove_unlikely_transients, uniform_sample
+
+    LSST_TAGS below uses FIVE of the six supported tags:
+      most_likely_sn, sn_near_galaxy_candidate, in_tns,
+      extragalactic_new_candidate, extragalactic_lt20mag_candidate.
+    in_tns is included deliberately: TNS cross-matching is already the
+    signal this codebase treats as central everywhere else (it drives the
+    Dashboard's primary discovery feed via tns_service.py), so excluding it
+    here would be inconsistent with no real justification.
+    extragalactic_new_candidate and extragalactic_lt20mag_candidate are
+    included as broad, general "is this a new/bright extragalactic
+    transient" filters — directly analogous in breadth to ZTF's "SN
+    candidate" class, and (for the lt20mag tag specifically) a natural fit
+    for a follow-up-planning platform, since bright targets are the most
+    tractable for spectroscopic follow-up.
+
+    hostless_candidate is the one supported tag deliberately EXCLUDED. Its
+    own description selects for the ABSENCE of a cross-matched host galaxy
+    (per the ELEPHANT algorithm), whereas host-context is used elsewhere in
+    this platform as a positive quality signal, not a selection criterion on
+    its own (see sn_near_galaxy_candidate above, and Object.host_galaxy_name/
+    host_galaxy_redshift). A "no known host" filter sits outside that
+    established pattern and, without additional vetting infrastructure this
+    pass does not add, risks surfacing a higher share of image artifacts or
+    simply under-catalogued fields as if they were noteworthy hostless
+    transients. This can be revisited if there's a specific use case for it.
+
     There is currently **no Kilonova- or SLSN-equivalent tag** on the LSST
-    side. LSST_TAGS below only includes the tags that are both API-supported
-    and plausibly transient-relevant; this is a real, current gap versus
-    ZTF's four classes, not an oversight.
+    side under any of the nine — a real, current gap versus ZTF's four
+    classes, not an oversight.
 
   Fields (verified against a real, live LSST alert sample — 135 fields)
     i:objectId          -> r:diaObjectId       (renamed, same concept)
@@ -75,6 +115,33 @@ inside FinkIngestionService, because the two are not a drop-in match:
     real date window (see _fetch_tag_window), advancing a cursor from the
     last successful run rather than fetching a fixed count.
 
+  Pagination ordering (confirmed empirically, not assumed — see below)
+    The API returns alerts in DESCENDING order by r:midpointMjdTai (newest
+    first). Confirmed live: a 500-record fetch for most_likely_sn over a
+    real 2026-07-14 window showed the response's distinct timestamps were
+    monotonically decreasing across its full length, and the very first
+    record's timestamp matched the query's stopdate side while the last
+    matched its startdate side. Pagination therefore walks BACKWARD:
+    `startdate` stays fixed at the true window start; `stopdate` shrinks to
+    the oldest timestamp seen in each page, so each subsequent page asks for
+    "everything even older than what's already been collected."
+
+    A deeper, related risk was also found and is NOT fully solved by
+    correcting the direction alone: a single visit can produce many alerts
+    sharing the identical midpointMjdTai — confirmed live, one visit
+    produced 460 most_likely_sn alerts at one exact timestamp. There is no
+    finer-grained, unique, monotonic secondary sort key available from this
+    API to guarantee a same-timestamp cluster is never split unsafely across
+    a page boundary. _fetch_tag_window detects the specific case where an
+    ENTIRE full page shares one timestamp (a strong signal that instant's
+    true cluster size may exceed PAGE_SIZE) and treats the run as NOT
+    exhausted rather than guessing — this converts a possible silent gap
+    into a logged, visible one, but does not provably eliminate the
+    underlying risk. GET with query-string parameters was also confirmed to
+    return actual alert records (not the tag-name/description catalog that a
+    bare, param-less GET to the same path returns) — the calling convention
+    itself is correct.
+
   Current operational status (as of this writing)
     The most recent night with any recorded alerts is 2026-07-14. Rubin
     Observatory's summit was evacuated on 2026-07-14 due to a record-breaking
@@ -106,12 +173,18 @@ logger = logging.getLogger(__name__)
 
 LSST_API_URL = "https://api.lsst.fink-portal.org/api/v1/tags"
 
-# Only tags that are both API-supported ("API support": true, confirmed live
-# via GET /api/v1/tags) and plausibly relevant to this platform's optical
-# transient scope. No Kilonova- or SLSN-equivalent tag currently exists.
+# Five of the six API-supported tags (confirmed live via GET /api/v1/tags) —
+# see module docstring's "Classification" section for the full nine-tag
+# breakdown and the specific reasoning for including in_tns,
+# extragalactic_new_candidate, and extragalactic_lt20mag_candidate, and for
+# excluding hostless_candidate despite it also being API-supported. No
+# Kilonova- or SLSN-equivalent tag currently exists under any of the nine.
 LSST_TAGS = [
     "most_likely_sn",
     "sn_near_galaxy_candidate",
+    "in_tns",
+    "extragalactic_new_candidate",
+    "extragalactic_lt20mag_candidate",
 ]
 
 # Per-page fetch size within a date window. Deliberately NOT the sole bound
@@ -201,19 +274,25 @@ class LsstFinkIngestionService:
 
         The date window is [last successful run's stop, now) — advancing a
         real cursor, not a fixed-count fetch (see module docstring for why
-        LSST's alert volume makes a fixed n=100 silently lossy). If any tag
-        does not fully drain its window within MAX_PAGES_PER_TAG, the
-        ingestion cursor is NOT advanced past the point actually reached for
-        that tag, so the next cycle resumes there rather than skipping
-        unfetched alerts. Rows are never deleted, matching the retention
-        philosophy already established for ZTF alerts.
+        LSST's alert volume makes a fixed n=100 silently lossy).
+
+        All-or-nothing per cycle: if EVERY tag fully drains its window, the
+        cursor advances to window_stop_dt and this run is marked
+        "completed" — the normal case. If ANY tag does not (safety cap hit,
+        an HTTP error mid-pagination, or a same-timestamp cluster whose true
+        size can't be confirmed — see _fetch_tag_window), this run is marked
+        "partial" instead, and _get_window_start (which only considers
+        "completed" rows) will have the NEXT cycle retry the identical
+        window from scratch. Re-covering already-ingested alerts this way is
+        harmless (ON CONFLICT DO NOTHING); silently advancing past
+        unconfirmed data would not be. Rows are never deleted, matching the
+        retention philosophy already established for ZTF alerts.
 
         Returns:
             Number of rows **actually inserted** (duplicate skips excluded).
         """
         window_start_dt = await self._get_window_start(session)
         window_stop_dt = datetime.now(timezone.utc)
-        window_start_mjd = Time(window_start_dt).mjd
 
         log = IngestionLog(
             source=LSST_SOURCE_NAME,
@@ -230,23 +309,21 @@ class LsstFinkIngestionService:
         inserted = 0
         had_http_error = False
         all_exhausted = True
-        earliest_unfinished_mjd: Optional[float] = None
 
         try:
             source_id = await self._ensure_source(session)
 
             for tag in LSST_TAGS:
-                alerts, exhausted, reached_mjd = await self._fetch_tag_window(
-                    tag, window_start_mjd, window_stop_dt
+                alerts, exhausted, _reached = await self._fetch_tag_window(
+                    tag, window_start_dt, window_stop_dt
                 )
                 if alerts is None:
                     had_http_error = True
+                    all_exhausted = False
                     continue
 
                 if not exhausted:
                     all_exhausted = False
-                    if earliest_unfinished_mjd is None or reached_mjd < earliest_unfinished_mjd:
-                        earliest_unfinished_mjd = reached_mjd
 
                 for alert in alerts:
                     if not _is_valid_lsst_alert(alert):
@@ -265,20 +342,21 @@ class LsstFinkIngestionService:
 
             if all_exhausted:
                 log.completed_at = window_stop_dt
+                log.status = "failed" if (had_http_error and inserted == 0) else "completed"
             else:
-                # Resume from the earliest point any tag failed to fully
-                # drain. Re-covering already-ingested alerts on the next run
-                # is harmless (ON CONFLICT DO NOTHING); skipping ahead would
-                # not be.
-                log.completed_at = _mjd_to_datetime(earliest_unfinished_mjd)
+                # Do NOT advance the cursor -- the next cycle retries this
+                # exact window from scratch rather than risk skipping
+                # whatever wasn't confirmed fully drained this time.
+                log.completed_at = datetime.now(timezone.utc)
+                log.status = "partial"
                 logger.warning(
                     "LSST ingestion did not fully drain its window for at "
-                    "least one tag; next cycle resumes from %s instead of %s",
-                    log.completed_at, window_stop_dt,
+                    "least one tag; the next cycle will retry the identical "
+                    "window [%s, %s] rather than advance past it.",
+                    window_start_dt, window_stop_dt,
                 )
 
             log.objects_ingested = inserted
-            log.status = "failed" if (had_http_error and inserted == 0) else "completed"
             await session.commit()
 
         except Exception as exc:
@@ -347,66 +425,116 @@ class LsstFinkIngestionService:
         return source.id
 
     async def _fetch_tag_window(
-        self, tag: str, start_mjd: float, stop_dt: datetime
+        self, tag: str, start_dt: datetime, stop_dt: datetime
     ) -> tuple[Optional[list[dict]], bool, float]:
-        """Fetch every alert for `tag` within [start_mjd, stop_dt), paging.
+        """Fetch every alert for `tag` within [start_dt, stop_dt), paging
+        BACKWARD from stop_dt toward start_dt.
+
+        Confirmed live (2026-07-31; see module docstring's "Pagination
+        ordering" section): the API returns alerts in DESCENDING order by
+        r:midpointMjdTai (newest first), not ascending. `start_dt` therefore
+        stays FIXED as the true window floor, and the query's `stopdate`
+        shrinks to the oldest timestamp seen in the page just fetched --
+        each subsequent page asks for "everything even older than what's
+        already been collected."
 
         Returns (alerts, exhausted, reached_mjd):
           alerts     — collected alert dicts, or None if the very first page
                        failed outright (HTTP/parse error).
           exhausted  — True if the window was fully drained (a short page,
                        or a naturally empty result) before MAX_PAGES_PER_TAG
-                       was reached. False if the safety cap was hit, or an
-                       HTTP error interrupted paging partway through, or the
-                       cursor could not be safely advanced (missing/
-                       non-advancing timestamp on the last alert).
-          reached_mjd — the furthest point actually processed; equals
-                       start_mjd if nothing was fetched.
+                       was reached. False if the safety cap was hit, an HTTP
+                       error interrupted paging partway through, the cursor
+                       could not be safely retreated (missing/non-retreating
+                       timestamp), or a full page shared one single
+                       timestamp (see below).
+          reached_mjd — the oldest point actually processed; equals
+                       start_dt's MJD if the window was fully drained.
 
-        The cursor advances to the LAST alert's own timestamp (not past it)
-        between pages: LSST alerts from the same visit share an identical
-        midpointMjdTai, so advancing strictly past the last alert risks
-        skipping same-timestamp siblings that happened to fall just past a
-        page boundary. Re-fetching the boundary batch on the next page is
-        redundant but harmless (ON CONFLICT DO NOTHING); skipping alerts
-        is not.
+        A single visit can produce many alerts sharing the identical
+        midpointMjdTai (confirmed live: 460 alerts at one exact timestamp
+        for one tag on one real visit, using a +/-2s bracket at n=5000) --
+        there is no finer-grained, unique, monotonic secondary sort key
+        available from this API. If an ENTIRE full page shares one
+        timestamp, that cluster's true size may exceed PAGE_SIZE, and
+        shrinking `stopdate` to it would silently drop whatever didn't fit
+        in this page (this exact stall was reproduced live: a real
+        page-by-page walk against the 2026-07-14 window repeatedly stuck on
+        mjd=61235.3751192781). Rather than guess, this is detected
+        explicitly and treated as NOT exhausted with a loud ERROR log --
+        this converts a possible silent gap into a visible one, but does
+        NOT provably eliminate the underlying risk in an even larger
+        cluster than one page.
         """
         collected: list[dict] = []
-        cursor = start_mjd
-        stop_str = stop_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+        # `cursor_dt` is the shrinking stop-side boundary (walking
+        # backward); start_dt itself never moves.
+        cursor_dt = stop_dt
+        start_mjd = Time(start_dt).mjd
+        start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
         for _ in range(MAX_PAGES_PER_TAG):
-            # The API's `startdate`/`stopdate` only reliably parse ISO
-            # datetime strings (confirmed live: a raw MJD numeric string
-            # causes a server-side 500, despite being a documented accepted
-            # format) -- convert the MJD cursor to ISO at the call boundary,
-            # not the other way around.
-            cursor_str = _mjd_to_datetime(cursor).strftime("%Y-%m-%d %H:%M:%S.%f")
-            batch = await self._fetch_page(tag, cursor_str, stop_str)
+            cursor_str = cursor_dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+            prev_cursor_mjd = Time(cursor_dt).mjd
+            batch = await self._fetch_page(tag, start_str, cursor_str)
 
             if batch is None:
-                return (collected if collected else None), False, cursor
+                return (collected if collected else None), False, prev_cursor_mjd
 
             if not batch:
-                return collected, True, cursor
+                return collected, True, start_mjd
+
+            first_mjd = batch[0].get("r:midpointMjdTai")
+            last_mjd = batch[-1].get("r:midpointMjdTai")
+            full_page = len(batch) == PAGE_SIZE
+
+            if full_page and first_mjd is not None and first_mjd == last_mjd:
+                logger.error(
+                    "LSST tag %r: a full page of %d alerts all share "
+                    "r:midpointMjdTai=%s -- this cluster may be larger than "
+                    "PAGE_SIZE and cannot be safely paged past without risking "
+                    "a silent gap. Marking this tag's window as NOT exhausted; "
+                    "the next cycle retries the whole window rather than "
+                    "advancing past unconfirmed data.",
+                    tag, PAGE_SIZE, last_mjd,
+                )
+                collected.extend(batch)
+                return collected, False, last_mjd
 
             collected.extend(batch)
 
-            if len(batch) < PAGE_SIZE:
-                return collected, True, cursor
+            if not full_page:
+                return collected, True, start_mjd
 
-            last_mjd = batch[-1].get("r:midpointMjdTai")
-            if last_mjd is None or last_mjd <= cursor:
-                # Can't safely make forward progress -- stop rather than loop.
-                return collected, False, cursor
-            cursor = last_mjd
+            if last_mjd is None or last_mjd >= prev_cursor_mjd:
+                # General stall guard -- catches what the same-timestamp
+                # cluster check above does NOT: a cluster boundary split
+                # subtly across a page (not the whole page), where shrinking
+                # stopdate to last_mjd would still yield a non-progressing
+                # (or backward) next query even though this page itself
+                # wasn't 100% one timestamp. Rather than loop or guess, stop
+                # and report not-exhausted.
+                #
+                # Note: collected.extend(batch) above already ran, so the
+                # alerts returned here duplicate whatever the previous page
+                # already contributed. That's expected, not an oversight --
+                # ON CONFLICT DO NOTHING at insert time makes the repeat
+                # harmless, and the alternative (dropping this page to avoid
+                # the duplicate) risks silently discarding alerts that were
+                # never actually captured elsewhere.
+                return collected, False, prev_cursor_mjd
+
+            if last_mjd <= start_mjd:
+                return collected, True, start_mjd
+
+            cursor_dt = _mjd_to_datetime(last_mjd)
 
         logger.warning(
             "Hit MAX_PAGES_PER_TAG=%d for tag %r; more alerts may remain in "
-            "this window. The next cycle resumes from the true cursor, not "
-            "from 'now'.", MAX_PAGES_PER_TAG, tag,
+            "this window. The next cycle retries the identical window.",
+            MAX_PAGES_PER_TAG, tag,
         )
-        return collected, False, cursor
+        return collected, False, Time(cursor_dt).mjd
 
     async def _fetch_page(
         self, tag: str, start: str, stop: str
