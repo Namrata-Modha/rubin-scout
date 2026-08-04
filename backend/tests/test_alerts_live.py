@@ -84,10 +84,11 @@ def _make_alert_row(
     return row
 
 
-def _make_class_row(classification, count):
+def _make_class_row(classification, count, alert_type="ztf_fink"):
     """Return a MagicMock that looks like a SQLAlchemy Row with named columns."""
     row = MagicMock()
     row.classification = classification
+    row.alert_type = alert_type
     row.count = count
     return row
 
@@ -282,6 +283,70 @@ async def test_live_alerts_returns_alert_rows():
 
 
 @pytest.mark.anyio
+async def test_live_alerts_alert_type_filter_accepted():
+    """?alert_type= is accepted and the endpoint returns 200 -- the survey
+    filter, analogous to ?classification=."""
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 0
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[count_result, rows_result])
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/alerts/live", params={"alert_type": "lsst_fink"}
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["alerts"] == []
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
+async def test_live_alerts_alert_type_filter_applies_to_query():
+    """?alert_type= must actually be applied as a WHERE clause on both the
+    count and row-fetch statements, not just accepted and ignored."""
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 0
+    rows_result = MagicMock()
+    rows_result.scalars.return_value.all.return_value = []
+
+    captured_stmts = []
+
+    async def _capture_execute(stmt):
+        captured_stmts.append(stmt)
+        return count_result if len(captured_stmts) == 1 else rows_result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=_capture_execute)
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/api/alerts/live", params={"alert_type": "lsst_fink"})
+        assert len(captured_stmts) == 2
+        for stmt in captured_stmts:
+            compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            assert "alert_type" in compiled
+            assert "lsst_fink" in compiled
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
 async def test_live_alerts_pagination_params_respected():
     """limit and offset query params are reflected in the response envelope."""
     count_result = MagicMock()
@@ -346,8 +411,9 @@ async def test_live_classifications_returns_200_with_correct_shape():
 
 @pytest.mark.anyio
 async def test_live_classifications_items_have_required_keys():
-    """Each classification item must have classification and count."""
-    rows = [_make_class_row("SN candidate", 50)]
+    """Each classification item must have classification, alert_type, and
+    count."""
+    rows = [_make_class_row("SN candidate", 50, alert_type="ztf_fink")]
     result = MagicMock()
     result.all.return_value = rows
 
@@ -365,9 +431,79 @@ async def test_live_classifications_items_have_required_keys():
         data = response.json()
         item = data["classifications"][0]
         assert "classification" in item
+        assert "alert_type" in item
         assert "count" in item
         assert item["classification"] == "SN candidate"
+        assert item["alert_type"] == "ztf_fink"
         assert item["count"] == 50
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
+async def test_live_classifications_returns_both_surveys_distinctly():
+    """ZTF and LSST rows must each carry their own alert_type in the
+    response -- the whole point of grouping by (alert_type, classification)
+    instead of classification alone is that the two survey's incompatible
+    vocabularies stay distinguishable rather than silently merged."""
+    rows = [
+        _make_class_row("SN candidate", 120, alert_type="ztf_fink"),
+        _make_class_row("most_likely_sn", 40, alert_type="lsst_fink"),
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/alerts/live/classifications")
+        data = response.json()
+        by_type = {item["alert_type"]: item for item in data["classifications"]}
+        assert by_type["ztf_fink"]["classification"] == "SN candidate"
+        assert by_type["ztf_fink"]["count"] == 120
+        assert by_type["lsst_fink"]["classification"] == "most_likely_sn"
+        assert by_type["lsst_fink"]["count"] == 40
+        assert data["total"] == 160
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
+async def test_live_classifications_groups_by_alert_type_and_classification():
+    """The query sent to the DB must select and GROUP BY alert_type as well
+    as classification -- not classification alone -- so this doesn't
+    silently regress back to merging ZTF and LSST rows together."""
+    result = MagicMock()
+    result.all.return_value = []
+
+    captured_stmts = []
+
+    async def _capture_execute(stmt):
+        captured_stmts.append(stmt)
+        return result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=_capture_execute)
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/api/alerts/live/classifications")
+        assert len(captured_stmts) == 1
+        compiled = str(captured_stmts[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "alert_type" in compiled
+        assert "GROUP BY" in compiled.upper()
     finally:
         app.dependency_overrides.pop(get_db, None)
 

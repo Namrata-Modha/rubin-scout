@@ -138,6 +138,51 @@ export const CLASS_INFO = {
       "A candidate superluminous supernova — 10–100× brighter than a normal supernova. Flagged by Fink based on ZTF photometry and slow-evolving light curves.",
     color: "#e599f7",
   },
+  // Fink/LSST (Rubin) tag names — LSST has no single classification field
+  // like ZTF's v:classification; discovery instead happens via named tags
+  // (see backend/app/ingestion/lsst_service.py's module docstring for the
+  // full nine-tag breakdown). These keys are the raw tag strings stored
+  // straight into alerts_live.classification for LSST rows.
+  "most_likely_sn": {
+    name: "Likely Supernova",
+    emoji: "💥",
+    short: "Supernova candidate (Fink/LSST)",
+    description:
+      "A transient flagged by Fink's SuperNNova and CATS classifiers, run on Rubin/LSST data, as likely to be a supernova. Awaiting spectroscopic confirmation.",
+    color: "#ff6b6b",
+  },
+  "sn_near_galaxy_candidate": {
+    name: "Supernova Near Galaxy",
+    emoji: "🌌",
+    short: "SN candidate matched to a host galaxy (Fink/LSST)",
+    description:
+      "A transient near a cataloged galaxy with brightness and color properties consistent with a supernova, flagged by Fink's LSST tag system based on catalog cross-matching.",
+    color: "#ff8787",
+  },
+  "in_tns": {
+    name: "Known TNS Counterpart",
+    emoji: "🏷️",
+    short: "Matched to a named transient in TNS (Fink/LSST)",
+    description:
+      "This Rubin/LSST detection already had a known counterpart in the IAU Transient Name Server at the time Rubin observed it — the same TNS cross-matching signal used throughout this platform.",
+    color: "#63e6be",
+  },
+  "extragalactic_new_candidate": {
+    name: "New Extragalactic Transient",
+    emoji: "🌠",
+    short: "Newly-appeared extragalactic candidate (Fink/LSST)",
+    description:
+      "A transient first seen within the last 5 days, bright enough to detect reliably, and showing a fading or rising rate consistent with an extragalactic source — flagged by Fink's LSST tag system.",
+    color: "#4dabf7",
+  },
+  "extragalactic_lt20mag_candidate": {
+    name: "Bright Extragalactic Transient",
+    emoji: "🔆",
+    short: "Bright (mag < 20), rising extragalactic candidate (Fink/LSST)",
+    description:
+      "A rising, extragalactic transient brighter than magnitude 20 — bright enough to be a strong candidate for spectroscopic follow-up. Flagged by Fink's LSST tag system.",
+    color: "#ffc078",
+  },
   "Unknown": {
     name: "Unknown",
     emoji: "🔭",

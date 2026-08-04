@@ -95,9 +95,10 @@ export async function getFRBEvents({ limit = 100, offset = 0 } = {}) {
 }
 
 /** Get paginated live alerts from alerts_live (Fink/ZTF broker). */
-export async function getLiveAlerts({ limit = 50, offset = 0, classification = null } = {}) {
+export async function getLiveAlerts({ limit = 50, offset = 0, classification = null, alertType = null } = {}) {
   const params = new URLSearchParams({ limit, offset });
   if (classification) params.set("classification", classification);
+  if (alertType) params.set("alert_type", alertType);
   return fetchJSON(`/alerts/live?${params}`);
 }
 
