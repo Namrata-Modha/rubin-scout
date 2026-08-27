@@ -713,7 +713,58 @@ async def test_ingest_window_stop_is_now_when_caught_up(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# check_stall — surfaces stall state for GET /api/health/ping                #
+# A zero-alert night (e.g. the observatory's ongoing dormancy) must not      #
+# look like a stall -- verified end-to-end, not assumed.                     #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_ingest_zero_new_alerts_completes_normally(httpx_mock):
+    """A real empty-page response for every tag (a genuine zero-alert
+    cycle, confirmed live as recently as 2026-08-27 -- see
+    docs/lsst-ingestion-recovery.md) must go through the actual
+    _fetch_tag_window code path and land on status "completed", not
+    "partial". This is what makes check_stall() safe: it only ever fires
+    on "partial" rows (see below), and this confirms a real zero-alert
+    cycle never produces one."""
+    for _ in range(len(LSST_TAGS)):  # one empty page per tag
+        httpx_mock.add_response(method="GET", json=[], status_code=200)
+
+    service = _make_service()
+    added = []
+    session = AsyncMock()
+    call_state = {"n": 0}
+
+    async def fake_execute(stmt):
+        call_state["n"] += 1
+        result = MagicMock()
+        if call_state["n"] in (1, 2):  # _get_window_start, _ensure_source
+            result.scalar_one_or_none.return_value = None
+            return result
+        result.rowcount = 1
+        return result
+
+    session.execute = AsyncMock(side_effect=fake_execute)
+
+    def _track_add(obj):
+        added.append(obj)
+        if type(obj).__name__ == "AlertSource":
+            obj.id = 7
+
+    session.add = MagicMock(side_effect=_track_add)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    inserted = await service.ingest(session)
+
+    assert inserted == 0
+    ingestion_logs = [o for o in added if type(o).__name__ == "IngestionLog"]
+    assert len(ingestion_logs) == 1
+    assert ingestion_logs[0].status == "completed"
+    assert ingestion_logs[0].completed_at is not None
+
+
+# --------------------------------------------------------------------------- #
+# check_stall — surfaces stall state for GET /api/ingest/lsst/status         #
 # --------------------------------------------------------------------------- #
 
 def _log_row(status: str, window_start: str):
@@ -739,6 +790,26 @@ async def test_check_stall_not_enough_history():
 async def test_check_stall_not_stalled_when_recent_run_completed():
     service = _make_service()
     rows = [_log_row("completed", "x") for _ in range(STALL_THRESHOLD_CYCLES)]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    status = await service.check_stall(session)
+    assert status["stalled"] is False
+
+
+@pytest.mark.asyncio
+async def test_check_stall_not_triggered_by_repeated_zero_alert_nights():
+    """Several consecutive real zero-alert cycles (as
+    test_ingest_zero_new_alerts_completes_normally produces) are all
+    "completed", each with a different, advancing window_start -- sustained
+    observatory dormancy must never look like a stall."""
+    service = _make_service()
+    rows = [
+        _log_row("completed", f"2026-08-{20 + i:02d}T00:00:00+00:00")
+        for i in range(STALL_THRESHOLD_CYCLES)
+    ]
     result = MagicMock()
     result.all.return_value = rows
     session = AsyncMock()

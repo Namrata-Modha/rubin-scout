@@ -22,7 +22,7 @@ from app.enrichment.gw_crossmatch import GWCrossMatchService
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.fink_service import FinkIngestionService
-from app.ingestion.lsst_service import MAX_WINDOW_SPAN
+from app.ingestion.lsst_service import MAX_WINDOW_SPAN, LsstFinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
 
@@ -33,16 +33,18 @@ tns_service = TNSIngestionService()
 alerce_service = AlerceIngestionService()
 chime_service = ChimeFRBIngestionService()
 fink_service = FinkIngestionService()
+lsst_service = LsstFinkIngestionService()
 enrichment_service = EnrichmentService()
 gw_service = GWCrossMatchService()
 
-# NOT YET WIRED: run_lsst_ingestion()/add_job() are intentionally not
-# implemented yet -- the interval decision is still open. This constant
-# exists only to prove out and enforce the MAX_WINDOW_SPAN-vs-interval
-# relationship ahead of that decision (must stay strictly less than
-# MAX_WINDOW_SPAN, or scheduler jitter would trip the cap on every healthy
-# cycle). PROVISIONAL. Full cadence investigation:
-# docs/lsst-ingestion-recovery.md.
+# 15 minutes -- confirmed against real Fink LSST data (see
+# docs/lsst-ingestion-recovery.md): the worst known 15-minute burst carried
+# 8,342/10,000 (83%) of the per-tag/cycle cap, so this interval keeps
+# steady-state cycles comfortably clear of it. Re-checked live on
+# 2026-08-27 (six weeks after the 2026-07-14 storm evacuation): the
+# observatory is still dormant, no new nights recorded, so the burst
+# evidence behind this number is unchanged. MUST stay strictly less than
+# MAX_WINDOW_SPAN below.
 LSST_INGESTION_INTERVAL_SECONDS = 900
 
 assert LSST_INGESTION_INTERVAL_SECONDS < MAX_WINDOW_SPAN.total_seconds(), (
@@ -167,6 +169,26 @@ async def run_fink_ingestion():
             logger.error(f"✗ Fink ingestion failed: {e}", exc_info=True)
 
 
+async def run_lsst_ingestion():
+    """Ingest the latest Fink/LSST (Rubin) live alerts into alerts_live.
+
+    Scheduled every LSST_INGESTION_INTERVAL_SECONDS, not daily like ZTF and
+    not inside the shared TNS/ALeRCE cycle -- see that constant's docstring
+    and docs/lsst-ingestion-recovery.md for why: LSST's volume is bursty
+    and an order of magnitude larger than either. A cycle that finds
+    nothing new (e.g. during the observatory's ongoing downtime) completes
+    normally via LsstFinkIngestionService.ingest's own exhausted-on-empty
+    handling -- this is not treated as an error here or by check_stall().
+    """
+    logger.info("Starting Fink/LSST (Rubin) live alert ingestion...")
+    async with async_session() as session:
+        try:
+            count = await lsst_service.ingest(session)
+            logger.info(f"✓ Fink/LSST ingestion complete: {count} alerts inserted")
+        except Exception as e:
+            logger.error(f"✗ Fink/LSST ingestion failed: {e}", exc_info=True)
+
+
 def start_background_scheduler():
     """
     Start the background ingestion scheduler.
@@ -200,6 +222,20 @@ def start_background_scheduler():
         timezone="UTC",
         id="fink_ingestion",
         name="Fink/ZTF Live Alert Ingestion",
+        replace_existing=True,
+    )
+
+    # Fink/LSST (Rubin) live alerts -- see LSST_INGESTION_INTERVAL_SECONDS's
+    # docstring for why this interval, not ZTF's daily cron or the shared
+    # TNS/ALeRCE cycle. Runs once immediately on start too, so a restart
+    # doesn't wait a full interval before catching up.
+    _scheduler.add_job(
+        run_lsst_ingestion,
+        "interval",
+        seconds=LSST_INGESTION_INTERVAL_SECONDS,
+        next_run_time=datetime.now(timezone.utc),
+        id="lsst_ingestion",
+        name="Fink/LSST (Rubin) Live Alert Ingestion",
         replace_existing=True,
     )
 
@@ -248,6 +284,11 @@ def start_background_scheduler():
     logger.info("  - ALeRCE enrichment (light curves + ML)")
     logger.info("  - SIMBAD cross-matching")
     logger.info("  - Fink/ZTF live alert ingestion (daily 10:00 UTC)")
+    logger.info(
+        f"  - Fink/LSST (Rubin) live alert ingestion "
+        f"(every {LSST_INGESTION_INTERVAL_SECONDS}s / "
+        f"{LSST_INGESTION_INTERVAL_SECONDS / 60:.1f} min)"
+    )
     logger.info("  - CHIME/FRB catalog ingestion (monthly, 1st 03:00 UTC)")
     logger.info("  - GWOSC GW event refresh (weekly)")
     logger.info("  - Database keep-alive ping (every 4 min)")
