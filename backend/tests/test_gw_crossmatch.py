@@ -151,7 +151,7 @@ async def test_seed_updates_existing_and_preserves_local_fields(monkeypatch):
     clobbered by the incoming Nones."""
     svc = GWCrossMatchService()
 
-    async def fake_fetch():
+    async def fake_fetch(payload=None):
         return [_NEW_EVENT]
 
     monkeypatch.setattr(
@@ -195,7 +195,7 @@ async def test_seed_inserts_new_with_null_skymap(monkeypatch):
     """Newly inserted events store skymap_url = None (no wrong URL)."""
     svc = GWCrossMatchService()
 
-    async def fake_fetch():
+    async def fake_fetch(payload=None):
         return [_NEW_EVENT]
 
     monkeypatch.setattr(
@@ -234,7 +234,7 @@ def test_is_broken_skymap_url():
 async def _run_seed_against_existing(monkeypatch, existing):
     svc = GWCrossMatchService()
 
-    async def fake_fetch():
+    async def fake_fetch(payload=None):
         return [_NEW_EVENT]
 
     monkeypatch.setattr(

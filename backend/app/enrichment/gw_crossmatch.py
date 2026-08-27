@@ -14,7 +14,9 @@ falls back to angular distance matching.
 
 import logging
 import math
-from datetime import timedelta, timezone
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from astropy.time import Time
@@ -71,16 +73,27 @@ DESCRIPTIONS = {
         "form from normal stellar evolution, challenging our understanding of how "
         "massive black holes form."
     ),
-    "GW200105": (
+    # Keyed on the long-form names for the same reason as GW231123_135430
+    # below. GWOSC published both under short names in O3_Discovery_Papers and
+    # renamed them when they were folded into GWTC-3, so the short keys stopped
+    # matching anything the feed serves. The short-named rows that used to
+    # carry these were additionally found to be fabricated and were deleted in
+    # 2026-08 — see docs/gw-events-data-quality.md.
+    "GW200105_162426": (
         "First confident detection of a neutron star-black hole merger. "
         "A black hole about 9 times the Sun's mass swallowed a neutron star "
         "about 1.9 solar masses. No electromagnetic counterpart was found."
     ),
-    "GW200115": (
+    "GW200115_042309": (
         "Second neutron star-black hole merger, with a 6 solar mass black hole "
-        "and a 1.5 solar mass neutron star. Better localized than GW200105."
+        "and a 1.5 solar mass neutron star. Better localized than the first."
     ),
-    "GW231123": (
+    # Keyed on the long-form name, which is the ONLY name GWOSC has ever
+    # served for this event (version keys run GW231123_135430-v1..v3, first
+    # published under O4_Discovery_Papers). The bare "GW231123" this was keyed
+    # on until 2026-08 never appeared in the GWOSC feed, so the description was
+    # attached to an ID that is never ingested and never rendered.
+    "GW231123_135430": (
         "The highest-mass binary black hole merger in GWTC-4.0, detected during "
         "LIGO's fourth observing run. The combined mass of the system pushed the "
         "boundaries of what we thought possible for black hole mergers."
@@ -231,7 +244,24 @@ def _classify_from_masses(mass_1: float | None, mass_2: float | None) -> dict:
     return {"BBH": 1.0}
 
 
-async def fetch_gwosc_events() -> list[dict]:
+async def _fetch_gwosc_payload() -> dict | None:
+    """GET the GWOSC allevents feed once. Returns the parsed JSON, or None.
+
+    Split out so a single HTTP round trip can feed both `fetch_gwosc_events`
+    (what we ingest) and `fetch_gwosc_catalog_index` (what GWOSC still knows
+    about, which is a strictly larger set -- see GwoscCatalogIndex).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(GWOSC_API_URL)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error("Failed to fetch GWOSC events: %s", e)
+        return None
+
+
+async def fetch_gwosc_events(payload: dict | None = None) -> list[dict]:
     """
     Fetch all public GW events from the GWOSC catalog API.
 
@@ -249,14 +279,13 @@ async def fetch_gwosc_events() -> list[dict]:
     placeholders — are dropped here and never reach the returned list.
     Returns a list of dicts ready to be upserted into the GWEvent table.
     Returns an empty list if GWOSC is unreachable.
+
+    Pass `payload` to reuse an already-fetched feed (see
+    `_fetch_gwosc_payload`) so one HTTP round trip can serve both this and
+    `fetch_gwosc_catalog_index`; omit it and this fetches its own.
     """
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(GWOSC_API_URL)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as e:
-        logger.error("Failed to fetch GWOSC events: %s", e)
+    data = payload if payload is not None else await _fetch_gwosc_payload()
+    if data is None:
         return []
 
     raw_events: dict = data.get("events", {})
@@ -351,6 +380,100 @@ async def fetch_gwosc_events() -> list[dict]:
     return result
 
 
+# GWOSC keys each entry in the allevents feed as "{name}-v{N}", where {name}
+# is the name the event carried AT THAT VERSION, while the entry's
+# "commonName" field always holds its CURRENT name. When the two disagree,
+# GWOSC is telling us the event was renamed. That is the only authoritative
+# rename record the public API exposes -- there is no per-event changelog
+# endpoint (/eventapi/json/event/{name}/ 404s for a retired name and returns
+# only the latest version for a live one).
+_VERSION_KEY_RE = re.compile(r"^(?P<name>.+)-v(?P<version>\d+)$")
+
+
+@dataclass(frozen=True)
+class GwoscCatalogIndex:
+    """What GWOSC currently knows about, for orphan detection.
+
+    ``known_names`` is every commonName in the live feed -- DELIBERATELY
+    including events `fetch_gwosc_events` drops by catalog tag (IAS-O3a,
+    Initial_LIGO_Virgo, GWTC-2.1-auxiliary; see _EXCLUDED_CATALOGS). A row we
+    choose not to re-ingest is NOT an orphan: GWOSC still serves it, we just
+    don't want it. Diffing the database against the *ingestable* list instead
+    would mis-flag all ~43 of those documented rows as retired.
+
+    ``renames`` maps a historical name to its current commonName, harvested
+    from the feed's version keys. This is the ONLY successor evidence
+    reconciliation acts on. Time-proximity matching is explicitly not used:
+    across all 433 events in the live feed, GWOSC's GPS time never moves more
+    than 0.1 s between versions, so a multi-hour gap between a stored
+    event_time and a same-day candidate is evidence AGAINST a rename, not for
+    one. See docs/gw-events-data-quality.md.
+    """
+
+    known_names: frozenset[str]
+    renames: dict[str, str]
+
+    @property
+    def is_empty(self) -> bool:
+        """True when the feed gave us nothing -- reconciliation must no-op."""
+        return not self.known_names
+
+
+async def fetch_gwosc_catalog_index(payload: dict | None = None) -> GwoscCatalogIndex:
+    """Build a GwoscCatalogIndex from the GWOSC allevents feed.
+
+    Returns an empty index if GWOSC is unreachable or the response carries no
+    events; callers MUST treat that as "no information", never as "everything
+    was retired".
+    """
+    data = payload if payload is not None else await _fetch_gwosc_payload()
+    if data is None:
+        return GwoscCatalogIndex(frozenset(), {})
+
+    raw_events: dict = data.get("events", {})
+    if not raw_events:
+        logger.warning("GWOSC response carried no events; catalog index is empty")
+        return GwoscCatalogIndex(frozenset(), {})
+
+    known: set[str] = set()
+    # historical name -> set of current names. A historical name that resolves
+    # to more than one current name is ambiguous and is dropped rather than
+    # guessed at.
+    candidates: dict[str, set[str]] = {}
+
+    for version_key, evt in raw_events.items():
+        current = evt.get("commonName")
+        if not current:
+            continue
+        known.add(current)
+        match = _VERSION_KEY_RE.match(version_key)
+        if match is None:
+            continue
+        historical = match.group("name")
+        if historical != current:
+            candidates.setdefault(historical, set()).add(current)
+
+    renames = {}
+    for historical, targets in candidates.items():
+        if historical in known:
+            # The old name is still a live event in its own right, so this is
+            # not a retirement -- don't shadow a real event with a rename.
+            continue
+        if len(targets) == 1:
+            renames[historical] = next(iter(targets))
+        else:
+            logger.warning(
+                "GWOSC name %s maps to multiple current names %s; not treating as a rename",
+                historical, sorted(targets),
+            )
+
+    logger.info(
+        "GWOSC catalog index: %d known names, %d documented renames",
+        len(known), len(renames),
+    )
+    return GwoscCatalogIndex(frozenset(known), renames)
+
+
 _TYPE_NOUN = {
     "BBH": "binary black hole merger",
     "BNS": "binary neutron star merger",
@@ -399,10 +522,26 @@ def _auto_description(dominant_type: str, props: dict) -> str:
     return f"{article} {noun} detected during a LIGO/Virgo/KAGRA observing run."
 
 
+# Reconciliation refuses to retire more than this fraction of gw_events in a
+# single pass. A healthy GWOSC release renames a handful of events at most; a
+# diff larger than this means the feed is truncated, not that the catalog was
+# rewritten. (For scale: the 13 orphans found in production in 2026-08 were
+# 2.9% of 444 rows.)
+MAX_RETIREMENT_FRACTION = 0.2
+
+# ...but the fraction alone is meaningless on a small table, where a single
+# legitimate retirement can exceed it. Retiring no more than this many rows is
+# always plausible regardless of table size, so the fraction guard only applies
+# above this floor.
+MIN_RETIREMENT_ABSOLUTE = 5
+
+
 class GWCrossMatchService:
     """Cross-matches optical transients with gravitational wave events."""
 
-    async def seed_gw_events(self, session: AsyncSession) -> int:
+    async def seed_gw_events(
+        self, session: AsyncSession, payload: dict | None = None
+    ) -> int:
         """Load GW events from GWOSC into the database, upserting existing rows.
 
         For a new ``superevent_id`` a fresh row is inserted.  For an existing
@@ -424,7 +563,7 @@ class GWCrossMatchService:
 
         Returns the number of rows inserted OR updated.
         """
-        events = await fetch_gwosc_events()
+        events = await fetch_gwosc_events(payload)
         if not events:
             logger.warning("No events returned from GWOSC; skipping seed")
             return 0
@@ -479,6 +618,192 @@ class GWCrossMatchService:
             "Seeded GW events from GWOSC: %d inserted, %d updated", inserted, updated
         )
         return inserted + updated
+
+    async def _relink_candidates(
+        self, session: AsyncSession, old_id: str, new_id: str
+    ) -> tuple[int, int]:
+        """Move gw_candidates rows from a retired event onto its successor.
+
+        `gw_candidates` has UNIQUE(superevent_id, oid), so an oid already
+        attached to the successor cannot simply be re-pointed. In that case the
+        retired duplicate is dropped and the successor row kept -- the two
+        describe the same (event, object) pair, and the successor is the one
+        keyed to an ID that still resolves.
+
+        Returns (relinked, deduped).
+        """
+        orphaned = (
+            await session.execute(
+                select(GWCandidate).where(GWCandidate.superevent_id == old_id)
+            )
+        ).scalars().all()
+        if not orphaned:
+            return 0, 0
+
+        taken = set(
+            (
+                await session.execute(
+                    select(GWCandidate.oid).where(GWCandidate.superevent_id == new_id)
+                )
+            ).scalars().all()
+        )
+
+        relinked = deduped = 0
+        for candidate in orphaned:
+            if candidate.oid in taken:
+                await session.delete(candidate)
+                deduped += 1
+            else:
+                candidate.superevent_id = new_id
+                taken.add(candidate.oid)
+                relinked += 1
+        return relinked, deduped
+
+    async def reconcile_retired_events(
+        self,
+        session: AsyncSession,
+        index: GwoscCatalogIndex | None = None,
+    ) -> dict:
+        """Soft-retire gw_events rows that GWOSC no longer serves.
+
+        A row is an orphan when its `superevent_id` is absent from the live
+        GWOSC feed ENTIRELY -- not merely absent from what we choose to ingest.
+        Rows dropped by catalog tag (IAS-O3a and friends) are still served by
+        GWOSC and are deliberately left alone here.
+
+        An orphan is flagged `retired_at` and never deleted. `superseded_by` is
+        filled in ONLY when GWOSC version history documents the rename (see
+        GwoscCatalogIndex.renames); when it does, any `gw_candidates` attached
+        to the retired ID are relinked onto the successor so locally computed
+        work survives the rename.
+
+        An orphan with no documented successor keeps `superseded_by` NULL. That
+        is the "a human must decide" state, and it is reported separately.
+        Reconciliation does NOT infer a successor from event_time proximity:
+        GWOSC trigger times are stable to 0.1 s across catalog releases, so an
+        hours-wide gap argues against a rename rather than for one.
+
+        A previously retired row that reappears in GWOSC is un-retired.
+
+        Returns a report dict. Safe to run repeatedly (idempotent).
+        """
+        report: dict = {
+            "checked": 0,
+            "retired": [],
+            "retired_unresolved": [],
+            "unretired": [],
+            "candidates_relinked": 0,
+            "candidates_deduped": 0,
+            "skipped_reason": None,
+        }
+
+        if index is None:
+            index = await fetch_gwosc_catalog_index()
+
+        if index.is_empty:
+            # No information is not the same as "everything was retired".
+            logger.warning(
+                "GWOSC catalog index is empty; skipping retirement reconciliation"
+            )
+            report["skipped_reason"] = "gwosc_unavailable"
+            return report
+
+        rows = (await session.execute(select(GWEvent))).scalars().all()
+        report["checked"] = len(rows)
+        known_ids = {row.superevent_id for row in rows}
+
+        missing = [r for r in rows if r.superevent_id not in index.known_names]
+        newly_missing = {r.superevent_id for r in missing if r.retired_at is None}
+
+        # Safety valve: a truncated or partially populated GWOSC response would
+        # make most of the table look retired. Refuse to write in that case
+        # rather than mass-retiring real events. Small absolute counts are
+        # always allowed -- see MIN_RETIREMENT_ABSOLUTE.
+        if (
+            len(newly_missing) > MIN_RETIREMENT_ABSOLUTE
+            and len(newly_missing) > len(rows) * MAX_RETIREMENT_FRACTION
+        ):
+            logger.error(
+                "Refusing to retire %d/%d gw_events in one pass (>%.0f%%); "
+                "GWOSC feed looks truncated",
+                len(newly_missing), len(rows), MAX_RETIREMENT_FRACTION * 100,
+            )
+            report["skipped_reason"] = "implausible_diff"
+            return report
+
+        now = datetime.now(timezone.utc)
+
+        for row in missing:
+            if row.retired_at is None:
+                row.retired_at = now
+
+            # Resolve a successor for newly retired rows, and re-try rows
+            # retired earlier without one -- GWOSC may have published the
+            # rename since the previous pass.
+            if row.superseded_by is None:
+                successor = index.renames.get(row.superevent_id)
+                # The successor must already exist locally: superseded_by is a
+                # foreign key onto gw_events.superevent_id.
+                if successor and successor in known_ids:
+                    row.superseded_by = successor
+                    relinked, deduped = await self._relink_candidates(
+                        session, row.superevent_id, successor
+                    )
+                    report["candidates_relinked"] += relinked
+                    report["candidates_deduped"] += deduped
+                elif successor:
+                    logger.warning(
+                        "%s was renamed to %s, but %s is not in gw_events; "
+                        "leaving unresolved until it is ingested",
+                        row.superevent_id, successor, successor,
+                    )
+
+            # A hand-written DESCRIPTIONS entry is keyed on superevent_id, so a
+            # rename silently strands it: the key stops matching anything the
+            # feed serves and the description is never rendered again. That is
+            # exactly how DESCRIPTIONS["GW231123"] died. Nothing else surfaces
+            # it, so say so loudly at the moment the ID is retired.
+            if row.superevent_id in DESCRIPTIONS:
+                logger.warning(
+                    "DESCRIPTIONS[%r] is now keyed on a retired superevent_id "
+                    "and will never be served; re-key it to %s",
+                    row.superevent_id,
+                    row.superseded_by or "its successor once one is identified",
+                )
+
+            if row.superevent_id in newly_missing:
+                if row.superseded_by:
+                    report["retired"].append(
+                        {
+                            "superevent_id": row.superevent_id,
+                            "superseded_by": row.superseded_by,
+                        }
+                    )
+                else:
+                    report["retired_unresolved"].append(row.superevent_id)
+
+        # A row GWOSC serves again is no longer retired.
+        for row in rows:
+            if row.retired_at is not None and row.superevent_id in index.known_names:
+                row.retired_at = None
+                row.superseded_by = None
+                report["unretired"].append(row.superevent_id)
+
+        await session.commit()
+
+        logger.info(
+            "GW retirement reconciliation: %d checked, %d newly retired with a "
+            "documented successor, %d newly retired WITHOUT one (human review "
+            "required: %s), %d un-retired, %d candidates relinked, %d deduped",
+            report["checked"],
+            len(report["retired"]),
+            len(report["retired_unresolved"]),
+            ", ".join(report["retired_unresolved"]) or "none",
+            len(report["unretired"]),
+            report["candidates_relinked"],
+            report["candidates_deduped"],
+        )
+        return report
 
     async def cross_match_event(
         self,
@@ -748,6 +1073,16 @@ class GWCrossMatchService:
                 # Raw GWOSC catalog tag this event was classified from (e.g.
                 # "GWTC-5.0", "GWTC-1-marginal"). None for pre-significance rows.
                 "catalog": props.get("catalog"),
+                # Soft-retirement state, written by reconcile_retired_events.
+                # `retired_at` non-null means GWOSC no longer serves this ID.
+                # `superseded_by` names the replacement when GWOSC documented
+                # the rename, and stays null when it did not -- a retired row
+                # with no successor is awaiting a human decision, not resolved.
+                # Retired rows are still listed rather than filtered out: the
+                # row is the only record the retired ID ever existed, and
+                # hiding it would silently change /api/gw/events behaviour.
+                "retired_at": evt.retired_at.isoformat() if evt.retired_at else None,
+                "superseded_by": evt.superseded_by,
             })
 
         return output, total

@@ -177,7 +177,21 @@ class GWEvent(Base):
     properties = Column(JSONB)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
-    candidates = relationship("GWCandidate", back_populates="event", cascade="all, delete-orphan")
+    # Soft retirement. Set when GWOSC stops serving this superevent_id (it was
+    # renamed, or withdrawn). The row is kept, never deleted, because it may
+    # carry locally computed candidates/skymap data and is the only record the
+    # retired ID ever existed. `superseded_by` is populated ONLY from GWOSC's
+    # own documented rename history -- a retired row with no successor means a
+    # human still has to decide. See reconcile_retired_events().
+    retired_at = Column(DateTime(timezone=True))
+    superseded_by = Column(String, ForeignKey("gw_events.superevent_id", ondelete="SET NULL"))
+
+    candidates = relationship(
+        "GWCandidate",
+        back_populates="event",
+        cascade="all, delete-orphan",
+        foreign_keys="GWCandidate.superevent_id",
+    )
 
 
 class GWCandidate(Base):

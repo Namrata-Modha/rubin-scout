@@ -18,7 +18,11 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session
 from app.enrichment.crossmatch import EnrichmentService
-from app.enrichment.gw_crossmatch import GWCrossMatchService
+from app.enrichment.gw_crossmatch import (
+    GWCrossMatchService,
+    _fetch_gwosc_payload,
+    fetch_gwosc_catalog_index,
+)
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.fink_service import FinkIngestionService
@@ -127,14 +131,54 @@ async def keepalive_ping():
 
 
 async def refresh_gw_events():
-    """Re-seed GW events from GWOSC to pick up new GWTC catalog releases."""
+    """Re-seed GW events from GWOSC, then reconcile retired superevent IDs.
+
+    Two halves of one weekly pass, sharing a single fetch of the GWOSC feed:
+
+      1. ``seed_gw_events`` upserts everything GWOSC still publishes, so new
+         GWTC catalog releases land.
+      2. ``reconcile_retired_events`` handles the other direction -- an ID
+         GWOSC has STOPPED publishing (renamed or withdrawn). Upsert alone
+         cannot see those: it only ever touches IDs present in the feed, so a
+         retired row would otherwise sit in ``gw_events`` forever alongside its
+         successor.
+
+    Reconciliation is deliberately not its own cron. It is only meaningful
+    against a freshly seeded table -- a successor has to already exist locally
+    before a retired row can be pointed at it.
+    """
     logger.info("Refreshing GW events from GWOSC...")
     async with async_session() as session:
         try:
-            count = await gw_service.seed_gw_events(session)
+            payload = await _fetch_gwosc_payload()
+            count = await gw_service.seed_gw_events(session, payload=payload)
             logger.info(f"✓ GW refresh complete: {count} new events seeded")
         except Exception as e:
             logger.error(f"✗ GW event refresh failed: {e}", exc_info=True)
+            return
+
+        try:
+            index = await fetch_gwosc_catalog_index(payload=payload)
+            report = await gw_service.reconcile_retired_events(session, index=index)
+            if report["skipped_reason"]:
+                logger.warning(
+                    "⚠ GW retirement reconciliation skipped: %s",
+                    report["skipped_reason"],
+                )
+            else:
+                logger.info(
+                    "✓ GW reconciliation complete: %d retired with successor, "
+                    "%d retired needing human review, %d un-retired",
+                    len(report["retired"]),
+                    len(report["retired_unresolved"]),
+                    len(report["unretired"]),
+                )
+        except Exception as e:
+            # Seeding already succeeded and was committed; a reconciliation
+            # failure must not make the whole refresh look like a no-op.
+            logger.error(
+                f"✗ GW retirement reconciliation failed: {e}", exc_info=True
+            )
 
 
 async def run_chime_ingestion():
