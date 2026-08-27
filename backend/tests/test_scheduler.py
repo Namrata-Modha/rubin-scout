@@ -50,3 +50,41 @@ def test_lsst_interval_stays_below_max_window_span():
     than an opaque ImportError from an unrelated test file."""
     from app.ingestion.lsst_service import MAX_WINDOW_SPAN
     assert sched.LSST_INGESTION_INTERVAL_SECONDS < MAX_WINDOW_SPAN.total_seconds()
+
+
+def test_lsst_not_pulled_in_ingestion_cycle():
+    """run_ingestion_cycle must not ingest LSST directly -- it's its own
+    dedicated interval job, same reasoning as CHIME's exclusion (LSST's
+    volume is bursty and an order of magnitude larger than TNS/ALeRCE)."""
+    src = inspect.getsource(sched.run_ingestion_cycle)
+    assert "lsst_service.ingest" not in src
+
+
+def test_run_lsst_ingestion_exists():
+    assert hasattr(sched, "run_lsst_ingestion")
+
+
+@pytest.mark.asyncio
+async def test_run_lsst_ingestion_calls_service():
+    """The dedicated interval job delegates to LsstFinkIngestionService.ingest."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=AsyncMock())
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(sched, "async_session", MagicMock(return_value=cm)), \
+         patch.object(sched.lsst_service, "ingest",
+                      new=AsyncMock(return_value=3)) as ingest:
+        await sched.run_lsst_ingestion()
+
+    ingest.assert_awaited_once()
+
+
+def test_lsst_ingestion_job_registered_with_configured_interval():
+    """start_background_scheduler must register run_lsst_ingestion using
+    LSST_INGESTION_INTERVAL_SECONDS -- the constant already defined and
+    already asserted against MAX_WINDOW_SPAN -- not a new literal that
+    could silently drift out of sync with that assertion."""
+    src = inspect.getsource(sched.start_background_scheduler)
+    assert "run_lsst_ingestion" in src
+    assert "LSST_INGESTION_INTERVAL_SECONDS" in src
+    assert 'id="lsst_ingestion"' in src
