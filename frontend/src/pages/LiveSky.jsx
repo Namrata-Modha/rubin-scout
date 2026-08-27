@@ -16,15 +16,18 @@ const SURVEY_FILTERS = [
 ];
 
 // Survey-aware empty-state copy. A genuinely empty Rubin/LSST result reads
-// as ambiguous/broken without context: LSST ingestion isn't on the
-// automatic scheduler yet (manual trigger only, see lsst_service.py), so
-// "zero alerts" there is an expected, current state, not a failure.
+// as ambiguous/broken without context. Ingestion IS scheduled (every 15
+// minutes, see LSST_INGESTION_INTERVAL_SECONDS in scheduler.py) and is
+// running fine — the upstream observatory is what's quiet: Rubin's summit
+// was evacuated 2026-07-14 for a record storm and Fink has recorded no LSST
+// night since (docs/lsst-ingestion-recovery.md; re-confirmed 2026-08-27).
+// So "zero alerts" is an expected upstream state, not a triggering problem.
 function emptyStateCopy(selectedSurvey) {
   if (selectedSurvey === "lsst_fink") {
     return {
       title: "No Rubin/LSST alerts found.",
       detail:
-        "Nothing's broken — Rubin/LSST ingestion isn't on the automatic schedule yet, it only runs when manually triggered, so there may simply be no run since the last one. Switch to \"All surveys\" to see ZTF alerts in the meantime.",
+        "Nothing's broken — Rubin/LSST ingestion runs automatically every 15 minutes, but Rubin Observatory's summit has been offline since the July 2026 storm, so there's genuinely nothing new to ingest yet. Switch to \"All surveys\" to see ZTF alerts in the meantime.",
     };
   }
   if (selectedSurvey === "ztf_fink") {
@@ -242,7 +245,8 @@ export default function LiveSky() {
           <h1 className="text-2xl font-semibold tracking-tight">Live Alert Stream</h1>
           <p className="text-sm text-white/40 mt-1">
             Real-time transient alerts from Fink's ZTF and Rubin/LSST alert streams. ZTF updates
-            daily at 10:00 UTC; Rubin/LSST is ingested on demand ahead of scheduled ingestion.
+            daily at 10:00 UTC; Rubin/LSST is ingested every 15 minutes, though the observatory
+            has been offline since the July 2026 storm.
           </p>
         </div>
         <button
