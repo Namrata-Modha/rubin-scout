@@ -42,3 +42,11 @@ def test_chime_manual_trigger_route_registered():
     from app.api.ingest import router
     paths = {r.path for r in router.routes}
     assert "/api/ingest/chime/trigger" in paths
+
+
+def test_lsst_interval_stays_below_max_window_span():
+    """scheduler.py asserts this at import time already; this test asserts
+    it directly too, so a violation fails here with a clear message rather
+    than an opaque ImportError from an unrelated test file."""
+    from app.ingestion.lsst_service import MAX_WINDOW_SPAN
+    assert sched.LSST_INGESTION_INTERVAL_SECONDS < MAX_WINDOW_SPAN.total_seconds()

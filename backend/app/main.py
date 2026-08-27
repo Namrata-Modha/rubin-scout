@@ -110,5 +110,13 @@ async def ping():
     Lightweight keep-alive endpoint for external cron pings.
     No auth, no rate limit, no database query.
     Prevents Supabase free tier from sleeping.
+
+    Pure liveness -- always 200 if the process can respond, deliberately
+    never influenced by any application-level signal (e.g. LSST ingestion
+    stall status, see GET /api/ingest/lsst/status instead). This is the
+    endpoint most likely to double as a platform-level liveness/restart
+    check (Render or similar), so it must never fail for a reason that
+    restarting the process wouldn't fix. Why: docs/lsst-ingestion-
+    recovery.md.
     """
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}

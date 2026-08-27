@@ -22,6 +22,7 @@ from app.enrichment.gw_crossmatch import GWCrossMatchService
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.fink_service import FinkIngestionService
+from app.ingestion.lsst_service import MAX_WINDOW_SPAN
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
 
@@ -34,6 +35,23 @@ chime_service = ChimeFRBIngestionService()
 fink_service = FinkIngestionService()
 enrichment_service = EnrichmentService()
 gw_service = GWCrossMatchService()
+
+# NOT YET WIRED: run_lsst_ingestion()/add_job() are intentionally not
+# implemented yet -- the interval decision is still open. This constant
+# exists only to prove out and enforce the MAX_WINDOW_SPAN-vs-interval
+# relationship ahead of that decision (must stay strictly less than
+# MAX_WINDOW_SPAN, or scheduler jitter would trip the cap on every healthy
+# cycle). PROVISIONAL. Full cadence investigation:
+# docs/lsst-ingestion-recovery.md.
+LSST_INGESTION_INTERVAL_SECONDS = 900
+
+assert LSST_INGESTION_INTERVAL_SECONDS < MAX_WINDOW_SPAN.total_seconds(), (
+    "LSST_INGESTION_INTERVAL_SECONDS must stay strictly less than "
+    "lsst_service.MAX_WINDOW_SPAN -- otherwise every steady-state cycle's "
+    "natural window would routinely hit the catch-up cap, defeating its "
+    "purpose. If you're intentionally changing the cadence, update "
+    "MAX_WINDOW_SPAN in lsst_service.py to stay larger too."
+)
 
 # Global scheduler instance
 _scheduler = None

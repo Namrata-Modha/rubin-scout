@@ -7,15 +7,18 @@ Security:
 """
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
+from app.ingestion.lsst_service import LsstFinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.security import limiter, require_admin_key
 
 router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
 tns_service = TNSIngestionService()
+lsst_service = LsstFinkIngestionService()
 settings = get_settings()
 
 
@@ -101,6 +104,28 @@ async def trigger_lsst_ingestion(
     service = LsstFinkIngestionService()
     count = await service.ingest(db)
     return {"status": "ok", "source": "fink_lsst", "alerts_inserted": count}
+
+
+@router.get("/lsst/status")
+@limiter.limit("60/minute")
+async def lsst_ingestion_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Report LSST ingestion stall status -- a separate concern from
+    GET /api/health/ping's pure process liveness, and deliberately not
+    merged into it (see that endpoint's docstring). Returns 503 when
+    genuinely stalled (see LsstFinkIngestionService.check_stall), 200
+    otherwise, so a monitor pointed specifically at this path can alert on
+    it without any risk to a liveness check pointed at /api/health/ping.
+    No admin key required -- read-only, not sensitive. Why:
+    docs/lsst-ingestion-recovery.md.
+    """
+    lsst_status = await lsst_service.check_stall(db)
+    body = {"lsst_ingestion": lsst_status}
+    if lsst_status.get("stalled"):
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @router.post("/admin/backfill-tns-photometry", dependencies=[Depends(require_admin_key)])
