@@ -56,6 +56,83 @@ async def test_health_check():
 
 
 @pytest.mark.anyio
+async def test_ping_is_pure_liveness_no_db_no_lsst_field():
+    """GET /api/health/ping must stay unaffected by LSST ingestion status --
+    no lsst_ingestion field, no DB dependency override needed, always 200.
+    This is the endpoint most likely to double as a platform-level
+    liveness check (Render or similar), so it must never fail for a reason
+    that restarting the process wouldn't fix. See GET
+    /api/ingest/lsst/status for the separate, application-level signal."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/health/ping")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "timestamp" in data
+    assert "lsst_ingestion" not in data
+
+
+@pytest.mark.anyio
+async def test_lsst_status_returns_200_when_not_stalled():
+    """GET /api/ingest/lsst/status is the dedicated, separate endpoint for
+    LSST ingestion stall status -- no admin key required, read-only."""
+    result = MagicMock()
+    result.all.return_value = []  # not enough run history yet -> not stalled
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/ingest/lsst/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["lsst_ingestion"]["stalled"] is False
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
+async def test_lsst_status_returns_503_when_stalled():
+    """A genuine stall must return 503 here -- so a monitor pointed
+    specifically at this path can alert on it, without any risk to
+    /api/health/ping's liveness contract."""
+    from app.ingestion.lsst_service import STALL_THRESHOLD_CYCLES
+
+    rows = []
+    for _ in range(STALL_THRESHOLD_CYCLES):
+        row = MagicMock()
+        row.status = "partial"
+        row.query_params = {"window_start": "2026-07-14T00:00:00+00:00"}
+        rows.append(row)
+
+    result = MagicMock()
+    result.all.return_value = rows
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    async def _mock_db():
+        yield session
+
+    app.dependency_overrides[get_db] = _mock_db
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/ingest/lsst/status")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["lsst_ingestion"]["stalled"] is True
+        assert data["lsst_ingestion"]["stuck_window_start"] == "2026-07-14T00:00:00+00:00"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.mark.anyio
 async def test_recent_alerts_params():
     """Recent alerts endpoint accepts filter parameters."""
     app.dependency_overrides[get_db] = _mock_db

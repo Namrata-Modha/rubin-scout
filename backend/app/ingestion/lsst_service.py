@@ -126,31 +126,36 @@ inside FinkIngestionService, because the two are not a drop-in match:
     the oldest timestamp seen in each page, so each subsequent page asks for
     "everything even older than what's already been collected."
 
-    A deeper, related risk was also found and is NOT fully solved by
-    correcting the direction alone: a single visit can produce many alerts
-    sharing the identical midpointMjdTai — confirmed live, one visit
-    produced 460 most_likely_sn alerts at one exact timestamp. There is no
-    finer-grained, unique, monotonic secondary sort key available from this
-    API to guarantee a same-timestamp cluster is never split unsafely across
-    a page boundary. _fetch_tag_window detects the specific case where an
-    ENTIRE full page shares one timestamp (a strong signal that instant's
-    true cluster size may exceed PAGE_SIZE) and treats the run as NOT
-    exhausted rather than guessing — this converts a possible silent gap
-    into a logged, visible one, but does not provably eliminate the
-    underlying risk. GET with query-string parameters was also confirmed to
-    return actual alert records (not the tag-name/description catalog that a
-    bare, param-less GET to the same path returns) — the calling convention
-    itself is correct.
+    A single visit can also produce many alerts sharing one identical
+    midpointMjdTai, with no finer secondary sort key available to split a
+    cluster safely across a page boundary. A full page sharing one
+    timestamp triggers a targeted recovery fetch (_fetch_cluster) rather
+    than an immediate give-up; only if that also can't confirm the
+    cluster's true size does the tag fall back to NOT exhausted. GET with
+    query-string parameters was confirmed to return actual alert records
+    (not the tag-name/description catalog a bare, param-less GET returns)
+    — the calling convention itself is correct. Full investigation and
+    real numbers: docs/lsst-ingestion-recovery.md.
+
+  Bounded retries, cluster recovery, and stall visibility
+    Three related fixes, verified against real Fink LSST data: (1)
+    MAX_WINDOW_SPAN bounds how much time a single cycle's window can span,
+    fixing a bug where a stalled retry's window grew wider every cycle
+    instead of staying identical; (2) _fetch_cluster recovers a
+    same-timestamp cluster the normal page size couldn't confirm was
+    drained, instead of stalling on it forever; (3) check_stall() surfaces
+    a genuine stall through GET /api/ingest/lsst/status rather than only
+    log lines -- kept separate from /api/health/ping's pure process
+    liveness, since a stalled ingestion cursor is not a reason to restart
+    the process. Full investigation, real cluster/volume numbers, and the
+    still-open scheduler interval decision: docs/lsst-ingestion-recovery.md.
 
   Current operational status (as of this writing)
-    The most recent night with any recorded alerts is 2026-07-14. Rubin
-    Observatory's summit was evacuated on 2026-07-14 due to a record-breaking
-    storm and, per the 2026-07-24 community status update, staff had not yet
-    been able to return. This is a real, documented, presumably-temporary
-    observatory closure — not a Fink/API failure and not evidence that this
-    ingestion path is broken. A live run against this deployment while the
-    summit is closed will correctly find zero new alerts and should log that
-    plainly, not treat it as an error.
+    The most recent night with any recorded alerts is still 2026-07-14,
+    confirmed via a live statistics check on 2026-08-04 — the observatory
+    has not resumed since the storm evacuation documented in
+    docs/lsst-ingestion-recovery.md. Not a Fink/API failure; a live run
+    while the summit is closed correctly finds zero new alerts.
 """
 
 import logging
@@ -204,6 +209,28 @@ MAX_PAGES_PER_TAG = 20
 # source), start the window this far back rather than attempting "all of
 # history".
 DEFAULT_LOOKBACK_HOURS = 24
+
+# Upper bound on how much wall-clock time a single cycle's window can span
+# -- fixes a bug where a stalled "partial" cycle's window grew wider every
+# retry instead of staying bounded (window_stop_dt was always "now"). Also
+# protects the manual trigger route, which has no cadence of its own. MUST
+# stay strictly smaller than the LSST job's interval (see scheduler.py's
+# assertion) or normal jitter would trip this on every healthy cycle.
+# Provisional value tied to the still-open interval decision. Full
+# investigation and real burst numbers: docs/lsst-ingestion-recovery.md.
+MAX_WINDOW_SPAN = timedelta(minutes=30)
+
+# Larger fetch size used ONLY by _fetch_cluster's targeted same-timestamp
+# recovery, never for normal paging (see PAGE_SIZE). Confirmed live: the
+# largest same-timestamp cluster found so far is 2,288 alerts, giving
+# ~2.2x headroom. Details: docs/lsst-ingestion-recovery.md.
+CLUSTER_FETCH_SIZE = 5000
+
+# How many consecutive "partial" IngestionLog cycles with an IDENTICAL
+# window_start must be observed before check_stall() reports a stall. Only
+# meaningful now that MAX_WINDOW_SPAN keeps that window genuinely stable
+# across repeated failures -- see docs/lsst-ingestion-recovery.md.
+STALL_THRESHOLD_CYCLES = 3
 
 # Stable machine key that identifies this source in alert_sources — distinct
 # from "fink_ztf" so ZTF and LSST alerts remain distinguishable in
@@ -272,27 +299,34 @@ class LsstFinkIngestionService:
     async def ingest(self, session: AsyncSession) -> int:
         """Run one ingestion cycle across all LSST_TAGS.
 
-        The date window is [last successful run's stop, now) — advancing a
-        real cursor, not a fixed-count fetch (see module docstring for why
-        LSST's alert volume makes a fixed n=100 silently lossy).
+        The date window is [last successful run's stop, min(now, last
+        successful run's stop + MAX_WINDOW_SPAN)) — advancing a real
+        cursor, not a fixed-count fetch (see module docstring), with a
+        hard cap on how much time a single cycle's window can cover.
 
         All-or-nothing per cycle: if EVERY tag fully drains its window, the
         cursor advances to window_stop_dt and this run is marked
-        "completed" — the normal case. If ANY tag does not (safety cap hit,
-        an HTTP error mid-pagination, or a same-timestamp cluster whose true
-        size can't be confirmed — see _fetch_tag_window), this run is marked
-        "partial" instead, and _get_window_start (which only considers
-        "completed" rows) will have the NEXT cycle retry the identical
-        window from scratch. Re-covering already-ingested alerts this way is
-        harmless (ON CONFLICT DO NOTHING); silently advancing past
-        unconfirmed data would not be. Rows are never deleted, matching the
-        retention philosophy already established for ZTF alerts.
+        "completed". If ANY tag does not (safety cap hit, an HTTP error, or
+        an unrecovered same-timestamp cluster — see _fetch_tag_window), the
+        run is marked "partial", and the NEXT cycle retries a genuinely
+        identical window (MAX_WINDOW_SPAN caps window_stop_dt as well as
+        window_start_dt — see its docstring). Re-covering already-ingested
+        alerts this way is harmless (ON CONFLICT DO NOTHING); silently
+        advancing past unconfirmed data would not be. Rows are never
+        deleted, matching the retention philosophy already established for
+        ZTF alerts.
 
         Returns:
             Number of rows **actually inserted** (duplicate skips excluded).
         """
         window_start_dt = await self._get_window_start(session)
-        window_stop_dt = datetime.now(timezone.utc)
+        # Capped at MAX_WINDOW_SPAN so a stalled/catching-up window can
+        # never grow unboundedly -- see MAX_WINDOW_SPAN's docstring. A
+        # no-op when caught up: min() resolves to "now" exactly as before.
+        window_stop_dt = min(
+            datetime.now(timezone.utc),
+            window_start_dt + MAX_WINDOW_SPAN,
+        )
 
         log = IngestionLog(
             source=LSST_SOURCE_NAME,
@@ -378,6 +412,45 @@ class LsstFinkIngestionService:
         )
         return inserted
 
+    async def check_stall(self, session: AsyncSession) -> dict:
+        """Report whether LSST ingestion looks genuinely stuck, for
+        surfacing through GET /api/ingest/lsst/status -- deliberately not
+        GET /api/health/ping, which stays pure process liveness (see that
+        endpoint's docstring for why the two are kept separate).
+
+        Stalled means: the last STALL_THRESHOLD_CYCLES IngestionLog rows
+        for this source are all status == "partial" AND share an identical
+        window_start (see MAX_WINDOW_SPAN's docstring for why this is only
+        a meaningful signal now). Intended for each status-check poll, not
+        the ingestion hot path -- ingestion_log is a small table, so this
+        is a cheap read.
+        """
+        result = await session.execute(
+            select(IngestionLog.status, IngestionLog.query_params)
+            .where(IngestionLog.source == LSST_SOURCE_NAME)
+            .order_by(IngestionLog.id.desc())
+            .limit(STALL_THRESHOLD_CYCLES)
+        )
+        rows = result.all()
+
+        if len(rows) < STALL_THRESHOLD_CYCLES:
+            return {"stalled": False, "consecutive_partial_cycles": len(rows)}
+
+        if not all(r.status == "partial" for r in rows):
+            return {"stalled": False, "consecutive_partial_cycles": 0}
+
+        window_starts = {
+            (r.query_params or {}).get("window_start") for r in rows
+        }
+        if len(window_starts) == 1:
+            return {
+                "stalled": True,
+                "consecutive_partial_cycles": len(rows),
+                "stuck_window_start": window_starts.pop(),
+            }
+
+        return {"stalled": False, "consecutive_partial_cycles": 0}
+
     # ----------------------------------------------------------------------- #
     # Internal helpers                                                          #
     # ----------------------------------------------------------------------- #
@@ -446,25 +519,20 @@ class LsstFinkIngestionService:
                        was reached. False if the safety cap was hit, an HTTP
                        error interrupted paging partway through, the cursor
                        could not be safely retreated (missing/non-retreating
-                       timestamp), or a full page shared one single
-                       timestamp (see below).
+                       timestamp), or a full-page same-timestamp cluster
+                       could not be confirmed drained even after a targeted
+                       recovery attempt (see below).
           reached_mjd — the oldest point actually processed; equals
                        start_dt's MJD if the window was fully drained.
 
-        A single visit can produce many alerts sharing the identical
-        midpointMjdTai (confirmed live: 460 alerts at one exact timestamp
-        for one tag on one real visit, using a +/-2s bracket at n=5000) --
-        there is no finer-grained, unique, monotonic secondary sort key
-        available from this API. If an ENTIRE full page shares one
-        timestamp, that cluster's true size may exceed PAGE_SIZE, and
-        shrinking `stopdate` to it would silently drop whatever didn't fit
-        in this page (this exact stall was reproduced live: a real
-        page-by-page walk against the 2026-07-14 window repeatedly stuck on
-        mjd=61235.3751192781). Rather than guess, this is detected
-        explicitly and treated as NOT exhausted with a loud ERROR log --
-        this converts a possible silent gap into a visible one, but does
-        NOT provably eliminate the underlying risk in an even larger
-        cluster than one page.
+        A single visit can produce many alerts sharing one identical
+        midpointMjdTai, with no finer secondary sort key to split a
+        cluster safely across a page boundary. If an ENTIRE full page
+        shares one timestamp, this triggers a targeted recovery fetch
+        (_fetch_cluster) rather than guessing; only if that's also capped
+        is the tag marked NOT exhausted with a loud ERROR log. Real
+        cluster sizes and the investigation behind this design:
+        docs/lsst-ingestion-recovery.md.
         """
         collected: list[dict] = []
         # `cursor_dt` is the shrinking stop-side boundary (walking
@@ -489,17 +557,42 @@ class LsstFinkIngestionService:
             full_page = len(batch) == PAGE_SIZE
 
             if full_page and first_mjd is not None and first_mjd == last_mjd:
+                cluster_mjd = last_mjd
+                recovered = await self._fetch_cluster(tag, cluster_mjd)
+
+                if recovered is not None:
+                    # Confirmed the full cluster (not just this one capped
+                    # page of it) -- safe to treat as drained and keep
+                    # paging past it, rather than giving up on the tag.
+                    collected.extend(recovered)
+                    logger.warning(
+                        "LSST tag %r: recovered a %d-alert same-timestamp "
+                        "cluster at r:midpointMjdTai=%s via a targeted "
+                        "follow-up fetch (a normal PAGE_SIZE=%d page alone "
+                        "could not confirm it was fully drained).",
+                        tag, len(recovered), cluster_mjd, PAGE_SIZE,
+                    )
+                    if cluster_mjd <= start_mjd:
+                        return collected, True, start_mjd
+                    # Step strictly past the cluster -- it's now fully
+                    # captured, so excluding it from the next page's
+                    # stopdate bound avoids re-triggering this same branch
+                    # on the identical cluster next iteration.
+                    cursor_dt = _mjd_to_datetime(cluster_mjd) - timedelta(microseconds=1)
+                    continue
+
                 logger.error(
                     "LSST tag %r: a full page of %d alerts all share "
-                    "r:midpointMjdTai=%s -- this cluster may be larger than "
-                    "PAGE_SIZE and cannot be safely paged past without risking "
-                    "a silent gap. Marking this tag's window as NOT exhausted; "
-                    "the next cycle retries the whole window rather than "
-                    "advancing past unconfirmed data.",
-                    tag, PAGE_SIZE, last_mjd,
+                    "r:midpointMjdTai=%s, and a targeted follow-up fetch "
+                    "capped at CLUSTER_FETCH_SIZE=%d alerts could not "
+                    "confirm the cluster's true size -- this exceeds "
+                    "automatic recovery. Marking this tag's window as NOT "
+                    "exhausted; the next cycle retries the identical window "
+                    "rather than advancing past unconfirmed data.",
+                    tag, PAGE_SIZE, cluster_mjd, CLUSTER_FETCH_SIZE,
                 )
                 collected.extend(batch)
-                return collected, False, last_mjd
+                return collected, False, cluster_mjd
 
             collected.extend(batch)
 
@@ -537,14 +630,16 @@ class LsstFinkIngestionService:
         return collected, False, Time(cursor_dt).mjd
 
     async def _fetch_page(
-        self, tag: str, start: str, stop: str
+        self, tag: str, start: str, stop: str, n: int = PAGE_SIZE
     ) -> Optional[list[dict]]:
         """GET one page from LSST Fink's /api/v1/tags for one tag.
 
         `start`/`stop` are ISO datetime strings ("%Y-%m-%d %H:%M:%S.%f") --
         confirmed live against the real API to parse correctly, unlike a raw
         MJD numeric string, which the API documents as accepted but which
-        actually returns a 500 (verified 2026-07).
+        actually returns a 500 (verified 2026-07). `n` defaults to PAGE_SIZE
+        for normal paging; _fetch_cluster passes CLUSTER_FETCH_SIZE instead
+        for its one-off targeted recovery fetch.
 
         Returns a list of alert dicts on success, or None on any HTTP/parse
         error (caller treats that as a failure and does not advance the
@@ -552,7 +647,7 @@ class LsstFinkIngestionService:
         """
         params = {
             "tag": tag,
-            "n": PAGE_SIZE,
+            "n": n,
             "startdate": start,
             "stopdate": stop,
             "output-format": "json",
@@ -585,6 +680,35 @@ class LsstFinkIngestionService:
             return None
 
         return data
+
+    async def _fetch_cluster(
+        self, tag: str, cluster_mjd: float
+    ) -> Optional[list[dict]]:
+        """Targeted recovery fetch for a same-timestamp cluster that a
+        normal PAGE_SIZE page could not confirm was fully drained (see the
+        cluster-detection branch in _fetch_tag_window).
+
+        Queries a narrow +/-2s bracket around cluster_mjd with
+        CLUSTER_FETCH_SIZE (much larger than PAGE_SIZE), then filters the
+        result down to exactly cluster_mjd -- this exact-match filter is
+        what makes the bracket width safe, not the width itself. The +/-2s
+        width was verified against real visit-timestamp gap data, not
+        assumed: docs/lsst-ingestion-recovery.md.
+
+        Returns the exact-timestamp alert list if CLUSTER_FETCH_SIZE was
+        enough to capture it uncapped, or None if even this generous fetch
+        was itself capped or failed -- the caller falls back to the
+        existing defensive not-exhausted behavior.
+        """
+        center_dt = _mjd_to_datetime(cluster_mjd)
+        start_str = (center_dt - timedelta(seconds=2)).strftime("%Y-%m-%d %H:%M:%S.%f")
+        stop_str = (center_dt + timedelta(seconds=2)).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        batch = await self._fetch_page(tag, start_str, stop_str, n=CLUSTER_FETCH_SIZE)
+        if batch is None or len(batch) >= CLUSTER_FETCH_SIZE:
+            return None
+
+        return [r for r in batch if r.get("r:midpointMjdTai") == cluster_mjd]
 
     async def _insert_alert(
         self,

@@ -13,13 +13,17 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from astropy.time import Time
 
 from app.ingestion.lsst_service import (
+    CLUSTER_FETCH_SIZE,
     DEFAULT_LOOKBACK_HOURS,
     LSST_SOURCE_NAME,
     LSST_TAGS,
     MAX_PAGES_PER_TAG,
+    MAX_WINDOW_SPAN,
     PAGE_SIZE,
+    STALL_THRESHOLD_CYCLES,
     LsstFinkIngestionService,
     _extract_cats_score,
     _is_valid_lsst_alert,
@@ -399,19 +403,57 @@ async def test_fetch_tag_window_first_page_http_error_returns_none(httpx_mock):
 
 
 @pytest.mark.asyncio
-async def test_fetch_tag_window_full_page_all_same_timestamp_is_not_exhausted(
+async def test_fetch_tag_window_cluster_recovery_succeeds_and_continues_paging(
     httpx_mock, caplog
 ):
-    """A full page where EVERY alert shares the exact same r:midpointMjdTai
-    is the confirmed-live cluster-overflow scenario (460 alerts sharing one
-    exact timestamp, observed for real against the 2026-07-14 window) -- the
-    true cluster size may exceed PAGE_SIZE, so shrinking stopdate to it could
-    silently drop whatever didn't fit in this page. This must NOT be treated
-    as exhausted, must stop rather than loop, and must log loudly (ERROR),
-    not guess."""
+    """A full page sharing one timestamp must trigger a targeted recovery
+    fetch (_fetch_cluster) rather than immediately giving up. If that
+    confirms the true cluster size, pagination continues past it instead
+    of retrying the identical window forever (see docs/lsst-ingestion-
+    recovery.md for the deterministic-stall bug this fixes)."""
     cluster_mjd = 61235.3751192781
     full_cluster_page = [_alert_at_mjd(i, cluster_mjd) for i in range(PAGE_SIZE)]
+    # Recovery fetch confirms the true cluster size -- well under
+    # CLUSTER_FETCH_SIZE, so it comes back uncapped.
+    recovered_cluster = [_alert_at_mjd(1000 + i, cluster_mjd) for i in range(700)]
+    short_page = [_alert_at_mjd(99999, cluster_mjd - 0.001)]
+
     httpx_mock.add_response(method="GET", json=full_cluster_page, status_code=200)
+    httpx_mock.add_response(method="GET", json=recovered_cluster, status_code=200)
+    httpx_mock.add_response(method="GET", json=short_page, status_code=200)
+
+    service = _make_service()
+    with caplog.at_level("WARNING"):
+        alerts, exhausted, reached = await service._fetch_tag_window(
+            "most_likely_sn", WINDOW_START_DT, WINDOW_STOP_DT
+        )
+
+    assert exhausted is True
+    # The recovered 700-alert cluster replaces the original capped page
+    # (avoids double-counting the same alerts), plus the final short page.
+    assert len(alerts) == 700 + 1
+    assert len(httpx_mock.get_requests()) == 3
+    assert any(
+        "recovered a 700-alert same-timestamp cluster" in r.message
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_tag_window_cluster_recovery_fails_when_still_capped(
+    httpx_mock, caplog
+):
+    """If even the generous targeted recovery fetch is itself capped at
+    CLUSTER_FETCH_SIZE, the cluster's true size genuinely can't be
+    confirmed automatically -- falls back to the original defensive
+    not-exhausted behavior, with a loud ERROR, and stops rather than
+    looping or guessing."""
+    cluster_mjd = 61235.3751192781
+    full_cluster_page = [_alert_at_mjd(i, cluster_mjd) for i in range(PAGE_SIZE)]
+    still_capped = [_alert_at_mjd(2000 + i, cluster_mjd) for i in range(CLUSTER_FETCH_SIZE)]
+
+    httpx_mock.add_response(method="GET", json=full_cluster_page, status_code=200)
+    httpx_mock.add_response(method="GET", json=still_capped, status_code=200)
 
     service = _make_service()
     with caplog.at_level("ERROR"):
@@ -419,12 +461,64 @@ async def test_fetch_tag_window_full_page_all_same_timestamp_is_not_exhausted(
             "most_likely_sn", WINDOW_START_DT, WINDOW_STOP_DT
         )
 
-    assert len(alerts) == PAGE_SIZE  # collected, not discarded
+    assert len(alerts) == PAGE_SIZE  # falls back to the original page, not discarded
     assert exhausted is False
     assert reached == pytest.approx(cluster_mjd)
-    # Only one request was made -- it stops instead of looping on the stall.
-    assert len(httpx_mock.get_requests()) == 1
-    assert any("all share r:midpointMjdTai" in r.message for r in caplog.records)
+    # Normal page + one recovery attempt, then stop -- no infinite loop.
+    assert len(httpx_mock.get_requests()) == 2
+    assert any(
+        "could not confirm the cluster's true size" in r.message
+        for r in caplog.records
+    )
+
+
+# --------------------------------------------------------------------------- #
+# _fetch_cluster — targeted same-timestamp recovery fetch                    #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_fetch_cluster_returns_exact_timestamp_subset(httpx_mock):
+    """_fetch_cluster must filter the bracket response down to exactly the
+    target timestamp -- protects correctness even if a neighboring visit's
+    cluster fell inside the +/-2s bracket too (see docs/lsst-ingestion-
+    recovery.md for why that's rare, though the filter doesn't rely on it)."""
+    cluster_mjd = 61235.3751192781
+    neighbor_mjd = cluster_mjd + 0.0005
+    mixed = (
+        [_alert_at_mjd(i, cluster_mjd) for i in range(10)]
+        + [_alert_at_mjd(100 + i, neighbor_mjd) for i in range(3)]
+    )
+    httpx_mock.add_response(method="GET", json=mixed, status_code=200)
+
+    service = _make_service()
+    result = await service._fetch_cluster("most_likely_sn", cluster_mjd)
+
+    assert result is not None
+    assert len(result) == 10
+    assert all(r["r:midpointMjdTai"] == cluster_mjd for r in result)
+
+
+@pytest.mark.asyncio
+async def test_fetch_cluster_returns_none_when_still_capped(httpx_mock):
+    """A recovery fetch that comes back at exactly CLUSTER_FETCH_SIZE means
+    the true cluster size still isn't confirmed -- must report None, not a
+    truncated (silently wrong) result."""
+    cluster_mjd = 61235.3751192781
+    capped = [_alert_at_mjd(i, cluster_mjd) for i in range(CLUSTER_FETCH_SIZE)]
+    httpx_mock.add_response(method="GET", json=capped, status_code=200)
+
+    service = _make_service()
+    result = await service._fetch_cluster("most_likely_sn", cluster_mjd)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_cluster_returns_none_on_http_error(httpx_mock):
+    httpx_mock.add_response(method="GET", status_code=500, text="boom")
+
+    service = _make_service()
+    result = await service._fetch_cluster("most_likely_sn", 61235.3751192781)
+    assert result is None
 
 
 # --------------------------------------------------------------------------- #
@@ -487,36 +581,25 @@ async def test_ingest_inserts_alerts_and_advances_cursor_when_exhausted(httpx_mo
 
 
 @pytest.mark.asyncio
-async def test_ingest_marks_partial_when_a_tag_does_not_fully_drain(httpx_mock, monkeypatch):
-    """If even one tag fails to fully drain its window (here: it hits
-    MAX_PAGES_PER_TAG), the whole cycle is marked "partial", not
-    "completed" -- and completed_at is NOT set to the window's real stop
-    time. _get_window_start only ever considers status == "completed" rows,
-    so this makes the next cycle retry the identical window from scratch
-    rather than silently skip whatever this run didn't confirm was fully
-    ingested."""
+async def test_ingest_marks_partial_when_a_tag_does_not_fully_drain(monkeypatch):
+    """If even one tag's _fetch_tag_window reports exhausted=False, the
+    whole cycle is marked "partial", not "completed", so the next cycle
+    retries the identical window rather than silently skip anything.
+
+    _fetch_tag_window is monkeypatched directly here -- its own pagination
+    mechanics are already covered above; this test is only about ingest()'s
+    status aggregation across tags."""
     service = _make_service()
 
-    # Pin the window so synthetic alert timestamps stay unambiguously
-    # comparable against start_dt (see WINDOW_START_DT/STOP_DT above),
-    # instead of depending on the real wall-clock "now".
     async def fake_window_start(session):
         return WINDOW_START_DT
     monkeypatch.setattr(service, "_get_window_start", fake_window_start)
 
-    def _full_page(offset):
-        return [_alert_at_mjd(i, 61235.9 - (offset + i) * 0.00001) for i in range(PAGE_SIZE)]
-
-    # First tag (most_likely_sn, first in LSST_TAGS) never fully drains.
-    for page_i in range(MAX_PAGES_PER_TAG):
-        httpx_mock.add_response(
-            method="GET", json=_full_page(page_i * PAGE_SIZE), status_code=200,
-        )
-    # Every other tag drains in one short page.
-    for _ in range(len(LSST_TAGS) - 1):
-        httpx_mock.add_response(
-            method="GET", json=[SAMPLE_LSST_ALERT], status_code=200,
-        )
+    async def fake_fetch_tag_window(tag, start_dt, stop_dt):
+        if tag == LSST_TAGS[0]:  # first tag never fully drains
+            return [SAMPLE_LSST_ALERT], False, Time(start_dt).mjd
+        return [SAMPLE_LSST_ALERT], True, Time(start_dt).mjd
+    monkeypatch.setattr(service, "_fetch_tag_window", fake_fetch_tag_window)
 
     added = []
     session = AsyncMock()
@@ -549,3 +632,157 @@ async def test_ingest_marks_partial_when_a_tag_does_not_fully_drain(httpx_mock, 
     assert ingestion_logs[0].status == "partial"
     assert ingestion_logs[0].completed_at is not None
     session.commit.assert_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# ingest() — MAX_WINDOW_SPAN caps the window regardless of how far behind    #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_ingest_caps_window_span_when_far_behind(monkeypatch):
+    """window_stop_dt must never exceed window_start_dt + MAX_WINDOW_SPAN,
+    even when the natural gap to "now" is much larger (first run, long
+    dormancy, or a sustained partial-retry stall) -- see MAX_WINDOW_SPAN's
+    docstring for the bug this fixes."""
+    service = _make_service()
+    far_past = datetime.now(timezone.utc) - timedelta(days=3)
+
+    async def fake_window_start(session):
+        return far_past
+    monkeypatch.setattr(service, "_get_window_start", fake_window_start)
+
+    seen_windows = []
+
+    async def fake_fetch_tag_window(tag, start_dt, stop_dt):
+        seen_windows.append((start_dt, stop_dt))
+        return [], True, Time(start_dt).mjd
+    monkeypatch.setattr(service, "_fetch_tag_window", fake_fetch_tag_window)
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None  # _ensure_source: not seeded
+    session.execute = AsyncMock(return_value=result)
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    await service.ingest(session)
+
+    assert len(seen_windows) == len(LSST_TAGS)
+    for start_dt, stop_dt in seen_windows:
+        assert start_dt == far_past
+        assert stop_dt == far_past + MAX_WINDOW_SPAN  # capped exactly, not "now"
+        assert stop_dt - start_dt <= MAX_WINDOW_SPAN
+
+
+@pytest.mark.asyncio
+async def test_ingest_window_stop_is_now_when_caught_up(monkeypatch):
+    """When caught up (the last completed run was recent), window_stop_dt
+    must still resolve to "now" -- MAX_WINDOW_SPAN is a no-op in the normal
+    case, not an unconditional truncation."""
+    service = _make_service()
+    recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    async def fake_window_start(session):
+        return recent
+    monkeypatch.setattr(service, "_get_window_start", fake_window_start)
+
+    seen_windows = []
+
+    async def fake_fetch_tag_window(tag, start_dt, stop_dt):
+        seen_windows.append((start_dt, stop_dt))
+        return [], True, Time(start_dt).mjd
+    monkeypatch.setattr(service, "_fetch_tag_window", fake_fetch_tag_window)
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute = AsyncMock(return_value=result)
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    before = datetime.now(timezone.utc)
+    await service.ingest(session)
+    after = datetime.now(timezone.utc)
+
+    assert len(seen_windows) == len(LSST_TAGS)
+    for start_dt, stop_dt in seen_windows:
+        assert start_dt == recent
+        assert before <= stop_dt <= after
+
+
+# --------------------------------------------------------------------------- #
+# check_stall — surfaces stall state for GET /api/health/ping                #
+# --------------------------------------------------------------------------- #
+
+def _log_row(status: str, window_start: str):
+    row = MagicMock()
+    row.status = status
+    row.query_params = {"window_start": window_start}
+    return row
+
+
+@pytest.mark.asyncio
+async def test_check_stall_not_enough_history():
+    service = _make_service()
+    result = MagicMock()
+    result.all.return_value = []
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    status = await service.check_stall(session)
+    assert status["stalled"] is False
+
+
+@pytest.mark.asyncio
+async def test_check_stall_not_stalled_when_recent_run_completed():
+    service = _make_service()
+    rows = [_log_row("completed", "x") for _ in range(STALL_THRESHOLD_CYCLES)]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    status = await service.check_stall(session)
+    assert status["stalled"] is False
+
+
+@pytest.mark.asyncio
+async def test_check_stall_detects_identical_window_partial_streak():
+    """Only meaningful now that MAX_WINDOW_SPAN keeps window_start/stop
+    stable across repeated failures -- see its docstring."""
+    service = _make_service()
+    rows = [
+        _log_row("partial", "2026-07-14T00:00:00+00:00")
+        for _ in range(STALL_THRESHOLD_CYCLES)
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    status = await service.check_stall(session)
+    assert status["stalled"] is True
+    assert status["consecutive_partial_cycles"] == STALL_THRESHOLD_CYCLES
+    assert status["stuck_window_start"] == "2026-07-14T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_check_stall_not_stalled_when_partial_windows_differ():
+    """Partial cycles with DIFFERENT window_start values means the cursor
+    is genuinely advancing -- not a stall, just normal catch-up progress
+    (e.g. multiple cycles draining a backlog in MAX_WINDOW_SPAN-sized
+    increments)."""
+    service = _make_service()
+    rows = [
+        _log_row("partial", f"2026-07-1{i}T00:00:00+00:00")
+        for i in range(STALL_THRESHOLD_CYCLES)
+    ]
+    result = MagicMock()
+    result.all.return_value = rows
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+
+    status = await service.check_stall(session)
+    assert status["stalled"] is False
