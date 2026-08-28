@@ -168,6 +168,44 @@ def _classify_significance(catalog_tag: str | None) -> str:
     return "unknown"
 
 
+def _select_ingestable_version(versions: list[dict]) -> dict:
+    """Pick which version of one GWOSC event to ingest.
+
+    GWOSC publishes an event repeatedly as catalogs are released, keyed
+    "{name}-v{N}". Two different signals live in that list, and the order they
+    are applied in matters:
+
+      * The catalog tag is a PROVENANCE signal — is this entry an LVK data
+        product we accept at all? A third-party reanalysis (IAS-O3a) or a
+        documented non-detection (Initial_LIGO_Virgo, GWTC-2.1-auxiliary) is
+        not, at any version. See _EXCLUDED_CATALOGS.
+      * The version number is a RECENCY signal WITHIN that accepted set — a
+        later LVK catalog supersedes an earlier one's parameters and verdict.
+
+    Selecting on recency first and checking provenance afterwards lets a
+    third-party reanalysis published at a higher version number veto a real
+    LVK detection: the event is dropped entirely even though a perfectly good
+    confident version exists lower down. That was a real bug — 33 confident
+    GWTC-2/GWTC-2.1 events (including GW190412, whose v5 is an IAS-O3a
+    reanalysis over a v4 GWTC-2.1-confident) never reached the database.
+
+    So: filter by provenance, then take the latest of what survives. Falling
+    back to the raw newest when EVERY version is excluded keeps this function
+    total; the caller then classifies that entry "excluded" and drops it, and
+    still logs a representative catalog tag.
+
+    Note this rule can only ever ADD events, never change which version an
+    already-ingested event resolves to: if the newest version overall is not
+    excluded, it is also the newest non-excluded one, so the pick is
+    identical.
+    """
+    eligible = [
+        v for v in versions
+        if _classify_significance(v.get("catalog.shortName")) != "excluded"
+    ]
+    return max(eligible or versions, key=lambda v: v.get("version", 0))
+
+
 def _classify_from_masses(mass_1: float | None, mass_2: float | None) -> dict:
     """
     Infer merger type from component masses (solar masses).
@@ -201,7 +239,9 @@ async def fetch_gwosc_events() -> list[dict]:
         {"events": {"GW...-v1": {commonName, GPS, far, luminosity_distance,
                                   mass_1_source, mass_2_source, ...}, ...}}
 
-    Deduplicates by commonName, keeping the highest version number.
+    Deduplicates by commonName via `_select_ingestable_version()` — the
+    highest version among catalogs we accept, NOT the highest version
+    outright (see there for why the ordering matters).
     Classifies each event's `catalog.shortName` into a significance tier via
     `_classify_significance()`, storing the result in `properties.significance`
     (and the raw tag in `properties.catalog`). Events classified "excluded" —
@@ -224,16 +264,20 @@ async def fetch_gwosc_events() -> list[dict]:
         logger.warning("GWOSC response contained no 'events' key or empty events dict")
         return []
 
-    # Deduplicate by commonName, keeping the highest version number.
-    # Each key is "{commonName}-v{N}"; each value is a flat event dict.
-    events_by_name: dict[str, dict] = {}
+    # Group every version of an event under its current commonName, then pick
+    # one per name. Each key is "{commonName}-v{N}"; each value is a flat
+    # event dict.
+    versions_by_name: dict[str, list[dict]] = {}
     for _version_key, evt in raw_events.items():
         common_name = evt.get("commonName")
         if not common_name:
             continue
-        existing = events_by_name.get(common_name)
-        if existing is None or evt.get("version", 0) > existing.get("version", 0):
-            events_by_name[common_name] = evt
+        versions_by_name.setdefault(common_name, []).append(evt)
+
+    events_by_name = {
+        name: _select_ingestable_version(versions)
+        for name, versions in versions_by_name.items()
+    }
 
     result = []
     skipped = 0

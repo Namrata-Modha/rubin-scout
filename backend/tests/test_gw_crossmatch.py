@@ -19,6 +19,7 @@ from app.enrichment.gw_crossmatch import (
     _classify_from_masses,
     _classify_significance,
     _is_broken_skymap_url,
+    _select_ingestable_version,
     fetch_gwosc_events,
 )
 from app.models.models import GWCandidate, GWEvent, Object
@@ -954,3 +955,158 @@ async def test_seed_route_calls_service_and_returns_its_result(monkeypatch):
     body = response.json()
     assert body["status"] == "ok"
     assert body["events_seeded"] == 12  # the route returns the service's own result
+
+
+# ---------------------------------------------------------------------------
+# _select_ingestable_version — version selection must filter by PROVENANCE
+# (catalog tag) before applying RECENCY (version number). Selecting the newest
+# version outright lets a third-party reanalysis published at a higher version
+# veto a real LVK detection; that masked 33 confident events in production.
+# ---------------------------------------------------------------------------
+
+def _ver(catalog_tag: str, version: int, name: str = "GWX") -> dict:
+    return _synthetic_gwosc_event(name, catalog_tag, version=version)
+
+
+def test_select_version_prefers_newest_when_none_excluded():
+    """Unchanged behaviour when every version is acceptable."""
+    versions = [
+        _ver("GWTC-2", 1),
+        _ver("GWTC-2.1-confident", 2),
+    ]
+    assert _select_ingestable_version(versions)["version"] == 2
+
+
+def test_select_version_skips_higher_excluded_version():
+    """The regression: IAS-O3a at v3 must not mask GWTC-2.1-confident at v2."""
+    versions = [
+        _ver("GWTC-2", 1),
+        _ver("GWTC-2.1-confident", 2),
+        _ver("IAS-O3a", 3),
+    ]
+    picked = _select_ingestable_version(versions)
+    assert picked["version"] == 2
+    assert picked["catalog.shortName"] == "GWTC-2.1-confident"
+
+
+def test_select_version_gw190412_real_shape():
+    """GW190412's actual live version history: a v5 IAS-O3a reanalysis sitting
+    on top of a v4 GWTC-2.1-confident. It is a real confident LVK detection."""
+    versions = [
+        _ver("O3_Discovery_Papers", 1),
+        _ver("O3_Discovery_Papers", 2),
+        _ver("GWTC-2", 3),
+        _ver("GWTC-2.1-confident", 4),
+        _ver("IAS-O3a", 5),
+    ]
+    picked = _select_ingestable_version(versions)
+    assert picked["version"] == 4
+    assert _classify_significance(picked["catalog.shortName"]) == "confident"
+
+
+def test_select_version_skips_auxiliary_catalog_too():
+    """GWTC-2.1-auxiliary is excluded on the same provenance grounds as IAS-O3a
+    (GW190424_180648's real shape)."""
+    versions = [
+        _ver("GWTC-2", 1),
+        _ver("GWTC-2.1-auxiliary", 2),
+    ]
+    assert _select_ingestable_version(versions)["version"] == 1
+
+
+def test_select_version_falls_back_when_all_excluded():
+    """Every version excluded => stay total, return the newest so the caller can
+    still classify it 'excluded' and log a representative tag."""
+    versions = [
+        _ver("IAS-O3a", 1),
+        _ver("IAS-O3a", 2),
+    ]
+    picked = _select_ingestable_version(versions)
+    assert picked["version"] == 2
+    assert _classify_significance(picked["catalog.shortName"]) == "excluded"
+
+
+def test_select_version_single_version_passthrough():
+    assert _select_ingestable_version([_ver("GWTC-3-confident", 1)])["version"] == 1
+
+
+def test_select_version_is_order_independent():
+    """The feed is a dict; iteration order must not decide the winner."""
+    versions = [
+        _ver("IAS-O3a", 3),
+        _ver("GWTC-2.1-confident", 2),
+        _ver("GWTC-2", 1),
+    ]
+    assert _select_ingestable_version(versions)["version"] == 2
+
+
+# --- end-to-end through fetch_gwosc_events --------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_recovers_event_masked_by_higher_excluded_version(httpx_mock):
+    """An event whose newest version is a third-party reanalysis is still
+    ingested, at its newest LVK version, with that version's tier."""
+    payload = {
+        "events": {
+            "GW190412-v3": _synthetic_gwosc_event("GW190412", "GWTC-2", version=3),
+            "GW190412_053044-v4": _synthetic_gwosc_event(
+                "GW190412", "GWTC-2.1-confident", version=4
+            ),
+            "GW190412-v5": _synthetic_gwosc_event("GW190412", "IAS-O3a", version=5),
+        }
+    }
+    httpx_mock.add_response(
+        method="GET", url="https://gwosc.org/eventapi/json/allevents/",
+        json=payload, status_code=200,
+    )
+
+    result = await fetch_gwosc_events()
+
+    assert len(result) == 1
+    evt = result[0]
+    assert evt["superevent_id"] == "GW190412"
+    assert evt["properties"]["significance"] == "confident"
+    assert evt["properties"]["catalog"] == "GWTC-2.1-confident"
+
+
+@pytest.mark.asyncio
+async def test_fetch_still_drops_event_excluded_at_every_version(httpx_mock):
+    """The fix must not smuggle in genuinely third-party-only events."""
+    payload = {
+        "events": {
+            "GWX-IAS-v1": _synthetic_gwosc_event("GWX-IAS", "IAS-O3a", version=1),
+            "GWX-IAS-v2": _synthetic_gwosc_event("GWX-IAS", "IAS-O3a", version=2),
+            "GWX-KEEP-v1": _synthetic_gwosc_event("GWX-KEEP", "GWTC-3-confident"),
+        }
+    }
+    httpx_mock.add_response(
+        method="GET", url="https://gwosc.org/eventapi/json/allevents/",
+        json=payload, status_code=200,
+    )
+
+    result = await fetch_gwosc_events()
+
+    assert [e["superevent_id"] for e in result] == ["GWX-KEEP"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_unchanged_when_newest_version_is_acceptable(httpx_mock):
+    """Events whose newest version is already fine must resolve to exactly the
+    same version as before the fix -- it can only add events, never re-point
+    one that was already ingested."""
+    payload = {
+        "events": {
+            "GWX-v1": _synthetic_gwosc_event("GWX", "GWTC-2", version=1),
+            "GWX-v2": _synthetic_gwosc_event("GWX", "GWTC-3-marginal", version=2),
+        }
+    }
+    httpx_mock.add_response(
+        method="GET", url="https://gwosc.org/eventapi/json/allevents/",
+        json=payload, status_code=200,
+    )
+
+    result = await fetch_gwosc_events()
+
+    assert len(result) == 1
+    assert result[0]["properties"]["catalog"] == "GWTC-3-marginal"
+    assert result[0]["properties"]["significance"] == "marginal"
