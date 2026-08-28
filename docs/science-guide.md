@@ -85,7 +85,7 @@ This is Rubin Scout's unique scientific feature and its primary research contrib
 - Bayesian ranking using source rate priors
 - Integration with telescope scheduling systems
 
-**Pre-loaded events:** Six notable GW events from GWTC catalogs are included with human descriptions: GW170817 (first BNS with EM counterpart AT2017gfo), GW190425 (second BNS), GW190521 (most massive BBH), GW200105 and GW200115 (first NSBH detections), and GW231123 (highest-mass BBH in GWTC-4.0).
+**Pre-loaded events:** Five notable GW events carry hand-written descriptions, keyed on the long-form names GWOSC actually serves: GW170817 (first BNS with EM counterpart AT2017gfo), GW190521 (most massive BBH), GW200105_162426 and GW200115_042309 (first NSBH detections), and GW231123_135430 (highest-mass BBH). Every other event's description is generated from its stored catalog parameters instead.
 
 ## SIMBAD Cross-Matching
 

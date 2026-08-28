@@ -75,7 +75,7 @@ Open http://localhost:8000/docs for the interactive Swagger UI. Try these endpoi
 - `GET /api/gw/events` -- gravitational wave events
 - `GET /api/classifications` -- count of objects by type
 - `GET /api/stats/summary?hours=87600` -- database statistics
-- `POST /api/gw/events/GW231123/crossmatch` -- find optical counterparts to a GW event
+- `POST /api/gw/events/GW231123_135430/crossmatch` -- find optical counterparts to a GW event (returns 422 until sky localisation is ingested -- see docs/gw-skymaps.md)
 
 ## Step 6: Start the Frontend
 
