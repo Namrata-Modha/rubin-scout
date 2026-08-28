@@ -16,7 +16,7 @@ only record that the retired ID was ever published.
                    guess. See docs/gw-events-data-quality.md.
 
 Revision ID: b7a3c9d1e5f2
-Revises: d4c5b6a7e8f9
+Revises: c3d9f0a15b27
 Create Date: 2026-08-27 00:00:00.000000
 
 """
@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = 'b7a3c9d1e5f2'
-down_revision: Union[str, None] = 'd4c5b6a7e8f9'
+down_revision: Union[str, None] = 'c3d9f0a15b27'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
