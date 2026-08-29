@@ -97,9 +97,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop in FK order. Guarded for symmetry with upgrade(): on a database
-    # where init.sql created these, an upgrade/downgrade round trip would
-    # otherwise remove tables this migration never made.
+    # Drop in FK order (gw_candidates references gw_events).
+    #
+    # WARNING: destructive, and it cannot tell who created these tables.
+    # Nothing records whether upgrade() actually created them or found them
+    # already there from init.sql, so on an existing deployment this drops
+    # data-bearing tables that this migration never made. The existence
+    # checks only keep the downgrade from erroring when they are already
+    # gone. Reversibility is kept for fresh, Alembic-built databases; on a
+    # deployed one, back up first.
     existing = _existing_tables()
     if 'gw_candidates' in existing:
         op.drop_table('gw_candidates')
