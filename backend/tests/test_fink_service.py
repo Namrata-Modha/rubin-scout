@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.models.models import IngestionLog
+
 from app.ingestion.fink_service import (
     FINK_API_URL,
     FINK_CLASSES,
@@ -222,6 +224,27 @@ async def test_non_200_response_returns_none(httpx_mock):
 # _parse_lastdate — both Fink date formats                                    #
 # --------------------------------------------------------------------------- #
 
+class _SavepointCM:
+    """Stand-in for AsyncSession.begin_nested()'s async context manager.
+
+    AsyncMock would return a coroutine here, which `async with` rejects, so
+    every alert would look like it failed. This mirrors the real return type.
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False  # never suppress -- let ingest() see real failures
+
+
+def _mock_session() -> AsyncMock:
+    """AsyncMock session wired for the savepoint-per-alert insert path."""
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.begin_nested = MagicMock(side_effect=lambda: _SavepointCM())
+    return session
+
 def test_parse_lastdate_with_milliseconds():
     dt = _parse_lastdate("2026-06-07 10:03:28.002")
     assert dt is not None
@@ -291,9 +314,8 @@ async def test_ingest_issues_no_delete(monkeypatch):
     result.scalar_one_or_none.return_value = source
     result.rowcount = 1
 
-    session = AsyncMock()
+    session = _mock_session()
     session.execute = AsyncMock(return_value=result)
-    session.add = MagicMock()
 
     inserted = await service.ingest(session)
 
@@ -302,3 +324,123 @@ async def test_ingest_issues_no_delete(monkeypatch):
     for call in session.execute.await_args_list:
         sql = str(call.args[0]).upper()
         assert "DELETE" not in sql
+
+
+# ---------------------------------------------------------------------------
+# Session-poisoning regressions.
+#
+# Catching a per-alert exception is not sufficient on its own: in Postgres a
+# failed statement aborts the enclosing transaction, so every later statement
+# -- including the final commit -- fails with "current transaction is aborted".
+# One bad row would silently cost the entire batch, and the failure handler
+# would then be unable to record why.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_one_bad_alert_does_not_poison_the_batch(monkeypatch):
+    """A failing insert is rolled back to its savepoint; later alerts survive."""
+    service = FinkIngestionService()
+
+    bad = {**SAMPLE_ALERT, "i:objectId": "ZTF_BAD"}
+    good = {**SAMPLE_ALERT, "i:objectId": "ZTF_GOOD"}
+
+    async def fake_fetch(class_name):
+        return [bad, good] if class_name == FINK_CLASSES[0] else []
+
+    monkeypatch.setattr(service, "_fetch_class", fake_fetch)
+
+    async def flaky_insert(session, alert, class_name, source_id):
+        if alert["i:objectId"] == "ZTF_BAD":
+            raise RuntimeError("duplicate key value violates unique constraint")
+        return 1
+
+    monkeypatch.setattr(service, "_insert_alert", flaky_insert)
+
+    source = MagicMock()
+    source.id = 1
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = source
+    session = _mock_session()
+    session.execute = AsyncMock(return_value=result)
+
+    inserted = await service.ingest(session)
+
+    # The good alert still landed despite the bad one failing first.
+    assert inserted == 1
+    # One savepoint per alert attempt, not one for the whole batch.
+    assert session.begin_nested.call_count == 2
+    # The run committed normally rather than falling into the failure handler.
+    assert session.commit.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_failure_handler_rolls_back_then_records_the_error(monkeypatch):
+    """The failure record must be written on a session that is not poisoned.
+
+    The handler rolls back first -- which also discards the flushed "running"
+    row -- so it has to insert a fresh IngestionLog carrying the error.
+    """
+    service = FinkIngestionService()
+
+    async def boom(session):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(service, "_ensure_source", boom)
+
+    session = _mock_session()
+    session.execute = AsyncMock(return_value=MagicMock())
+
+    inserted = await service.ingest(session)
+
+    assert inserted == 0
+    session.rollback.assert_awaited_once()
+
+    logs = [c.args[0] for c in session.add.call_args_list
+            if isinstance(c.args[0], IngestionLog)]
+    # The original "running" row, then a replacement recording the failure.
+    assert len(logs) == 2
+    failure = logs[-1]
+    assert failure.status == "failed"
+    assert "connection reset by peer" in failure.error_message
+    assert failure.completed_at is not None
+    # started_at is carried over so the run's real duration is preserved.
+    assert failure.started_at == logs[0].started_at
+
+
+@pytest.mark.asyncio
+async def test_failure_record_survives_a_poisoned_session(monkeypatch):
+    """Rollback must happen BEFORE the commit, or the record is lost.
+
+    Simulates Postgres refusing every statement until the transaction ends:
+    commit fails while the session is poisoned and succeeds once rolled back.
+    """
+    service = FinkIngestionService()
+
+    async def boom(session):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(service, "_ensure_source", boom)
+
+    session = _mock_session()
+    session.execute = AsyncMock(return_value=MagicMock())
+
+    poisoned = {"value": True}
+
+    async def commit():
+        if poisoned["value"]:
+            raise RuntimeError(
+                "current transaction is aborted, commands ignored until "
+                "end of transaction block"
+            )
+
+    async def rollback():
+        poisoned["value"] = False
+
+    session.commit = AsyncMock(side_effect=commit)
+    session.rollback = AsyncMock(side_effect=rollback)
+
+    await service.ingest(session)
+
+    # Rollback cleared the poison, so the failure record's commit went through.
+    assert poisoned["value"] is False
+    session.commit.assert_awaited()
