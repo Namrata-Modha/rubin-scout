@@ -144,10 +144,14 @@ class FinkIngestionService:
         Returns:
             Number of rows **actually inserted** (duplicate skips excluded).
         """
+        started_at = datetime.now(timezone.utc)
+        query_params = {"classes": FINK_CLASSES, "n_per_class": ALERTS_PER_CLASS}
+
         log = IngestionLog(
             source=FINK_SOURCE_NAME,
-            query_params={"classes": FINK_CLASSES, "n_per_class": ALERTS_PER_CLASS},
+            query_params=query_params,
             status="running",
+            started_at=started_at,
         )
         session.add(log)
         await session.flush()  # materialise log.id before any potential failure
@@ -175,9 +179,20 @@ class FinkIngestionService:
                         continue
 
                     try:
-                        inserted += await self._insert_alert(
-                            session, alert, class_name, source_id
-                        )
+                        # SAVEPOINT per alert. Catching the exception is not
+                        # enough on its own: a failed statement leaves the
+                        # enclosing transaction in an aborted state, so every
+                        # later alert -- and the final commit -- would fail with
+                        # "current transaction is aborted, commands ignored
+                        # until end of transaction block". One bad row would
+                        # silently cost the whole batch. Rolling back to a
+                        # savepoint releases only that row's work and leaves the
+                        # transaction usable.
+                        async with session.begin_nested():
+                            n_inserted = await self._insert_alert(
+                                session, alert, class_name, source_id
+                            )
+                        inserted += n_inserted
                     except Exception as exc:
                         # Single-alert failures must never abort the whole run
                         logger.warning(
@@ -207,9 +222,28 @@ class FinkIngestionService:
         except Exception as exc:
             logger.error("Fink ingestion run aborted: %s", exc, exc_info=True)
             try:
-                log.status = "failed"
-                log.error_message = str(exc)[:2000]  # truncate for column width
-                log.completed_at = datetime.now(timezone.utc)
+                # Whatever raised may have left the transaction aborted, in
+                # which case every further statement on this session -- the
+                # commit below included -- fails too, and the run leaves no
+                # record of why it died. Roll back first so the session is
+                # usable again.
+                #
+                # That rollback also discards the "running" row flushed above,
+                # since it was never committed. So the failure record has to be
+                # a NEW row rather than an edit of `log`, carrying the original
+                # started_at so the run's true duration survives.
+                await session.rollback()
+                session.add(
+                    IngestionLog(
+                        source=FINK_SOURCE_NAME,
+                        query_params=query_params,
+                        status="failed",
+                        error_message=str(exc)[:2000],  # truncate for column width
+                        objects_ingested=0,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
                 await session.commit()
             except Exception as commit_exc:
                 # Commit itself failed — log and bail without masking the original
