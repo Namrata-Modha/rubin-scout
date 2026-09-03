@@ -222,7 +222,17 @@ class IngestionLog(Base):
     query_params = Column(JSONB)
     objects_ingested = Column(Integer, default=0)
     started_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    # When the run actually finished. Literal wall-clock time for EVERY
+    # source -- never overload this with anything else, or cross-source
+    # duration reporting silently produces nonsense (see cursor_position).
     completed_at = Column(DateTime(timezone=True))
+    # How far a resumable source advanced its ingestion cursor, for sources
+    # that page through a moving time window rather than refetching a fixed
+    # set. Set only on a run that fully drained its window, so the next run
+    # can resume from exactly here; NULL on partial/failed runs, which must
+    # retry their window rather than skip past it, and NULL for sources with
+    # no cursor at all (TNS, ALeRCE, CHIME, Fink/ZTF).
+    cursor_position = Column(DateTime(timezone=True))
     status = Column(String, default="running")
     error_message = Column(Text)
 

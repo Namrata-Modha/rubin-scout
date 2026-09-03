@@ -857,3 +857,125 @@ async def test_check_stall_not_stalled_when_partial_windows_differ():
 
     status = await service.check_stall(session)
     assert status["stalled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# cursor_position vs completed_at                                              #
+#                                                                              #
+# lsst_service used to store its resume point in completed_at, which every     #
+# other source uses for wall-clock completion time. That made 577 of 578       #
+# fink_lsst rows report a negative duration. The cursor now has its own        #
+# column and completed_at means one thing everywhere.                          #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_completed_run_records_cursor_and_a_real_completed_at(monkeypatch):
+    """A drained window advances cursor_position, and completed_at is a
+    genuine timestamp -- specifically NOT the window stop."""
+    service = _make_service()
+
+    async def fake_window_start(session):
+        return WINDOW_START_DT
+    monkeypatch.setattr(service, "_get_window_start", fake_window_start)
+
+    async def fake_fetch_tag_window(tag, start_dt, stop_dt):
+        return [], True, None  # nothing to ingest, but fully drained
+    monkeypatch.setattr(service, "_fetch_tag_window", fake_fetch_tag_window)
+
+    async def fake_ensure_source(session):
+        return 7
+    monkeypatch.setattr(service, "_ensure_source", fake_ensure_source)
+
+    added = []
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock())
+    session.add = MagicMock(side_effect=added.append)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    before = datetime.now(timezone.utc)
+    await service.ingest(session)
+    after = datetime.now(timezone.utc)
+
+    log = [o for o in added if type(o).__name__ == "IngestionLog"][0]
+    assert log.status == "completed"
+
+    # The cursor is the window stop, in its own column.
+    assert log.cursor_position is not None
+    assert log.cursor_position >= WINDOW_START_DT
+
+    # completed_at is wall-clock, and must not have been handed the cursor.
+    assert before <= log.completed_at <= after
+    assert log.completed_at != log.cursor_position
+
+    # The regression that started all this: completed_at bounded by real
+    # wall-clock time is what makes a duration non-negative. (started_at is
+    # populated by the ORM column default at flush, which a mocked session
+    # never performs, so it is not asserted on here.)
+
+
+@pytest.mark.asyncio
+async def test_partial_run_leaves_cursor_null_but_still_timestamps(monkeypatch):
+    """A window that did not fully drain must not advance the cursor, yet
+    still records a real completed_at like every other source."""
+    service = _make_service()
+
+    async def fake_window_start(session):
+        return WINDOW_START_DT
+    monkeypatch.setattr(service, "_get_window_start", fake_window_start)
+
+    async def fake_fetch_tag_window(tag, start_dt, stop_dt):
+        return [], False, None  # never drains
+    monkeypatch.setattr(service, "_fetch_tag_window", fake_fetch_tag_window)
+
+    async def fake_ensure_source(session):
+        return 7
+    monkeypatch.setattr(service, "_ensure_source", fake_ensure_source)
+
+    added = []
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock())
+    session.add = MagicMock(side_effect=added.append)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    before = datetime.now(timezone.utc)
+    await service.ingest(session)
+    after = datetime.now(timezone.utc)
+
+    log = [o for o in added if type(o).__name__ == "IngestionLog"][0]
+    assert log.status == "partial"
+    assert log.cursor_position is None  # window will be retried, not skipped
+    assert before <= log.completed_at <= after
+
+
+@pytest.mark.asyncio
+async def test_get_window_start_reads_cursor_position_not_completed_at():
+    """The resume point must come from cursor_position.
+
+    Asserted on the emitted SQL rather than the return value, because a mock
+    returning one datetime cannot distinguish which column was selected --
+    and reading the wrong one is exactly the bug being fixed.
+    """
+    service = _make_service()
+    cursor = datetime(2026, 7, 10, 3, 0, 0, tzinfo=timezone.utc)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = cursor
+
+    captured = {}
+
+    async def capture(stmt):
+        captured["sql"] = str(stmt)
+        return result
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=capture)
+
+    start = await service._get_window_start(session)
+
+    assert start == cursor
+    sql = captured["sql"]
+    assert "cursor_position" in sql
+    # completed_at must not appear anywhere -- not selected, not filtered on,
+    # not ordered by.
+    assert "completed_at" not in sql

@@ -375,12 +375,20 @@ class LsstFinkIngestionService:
                         )
 
             if all_exhausted:
-                log.completed_at = window_stop_dt
+                # The window was fully drained, so the next run resumes from
+                # its stop time. That resume point goes in cursor_position;
+                # completed_at means what it means for every other source --
+                # when this run finished. Conflating the two is what made 577
+                # historical rows report a negative duration.
+                log.cursor_position = window_stop_dt
+                log.completed_at = datetime.now(timezone.utc)
                 log.status = "failed" if (had_http_error and inserted == 0) else "completed"
             else:
                 # Do NOT advance the cursor -- the next cycle retries this
                 # exact window from scratch rather than risk skipping
-                # whatever wasn't confirmed fully drained this time.
+                # whatever wasn't confirmed fully drained this time. Leaving
+                # cursor_position NULL is what encodes that: _get_window_start
+                # only ever resumes from a row that has one.
                 log.completed_at = datetime.now(timezone.utc)
                 log.status = "partial"
                 logger.warning(
@@ -456,19 +464,26 @@ class LsstFinkIngestionService:
     # ----------------------------------------------------------------------- #
 
     async def _get_window_start(self, session: AsyncSession) -> datetime:
-        """Resume from the last successfully-completed run's stop time.
+        """Resume from the furthest cursor a completed run has reached.
 
-        Falls back to DEFAULT_LOOKBACK_HOURS on the very first run (no prior
-        completed IngestionLog row for this source exists yet).
+        Reads `cursor_position`, NOT `completed_at`: the latter is wall-clock
+        completion time for every source and says nothing about how far this
+        one got. Ordering by the cursor rather than by recency also means a
+        late-finishing run that covered an earlier window cannot drag the
+        resume point backwards.
+
+        Only "completed" runs carry a cursor -- partial and failed runs leave
+        it NULL so their window is retried rather than skipped. Falls back to
+        DEFAULT_LOOKBACK_HOURS when no completed run exists yet.
         """
         result = await session.execute(
-            select(IngestionLog.completed_at)
+            select(IngestionLog.cursor_position)
             .where(
                 IngestionLog.source == LSST_SOURCE_NAME,
                 IngestionLog.status == "completed",
-                IngestionLog.completed_at.isnot(None),
+                IngestionLog.cursor_position.isnot(None),
             )
-            .order_by(IngestionLog.completed_at.desc())
+            .order_by(IngestionLog.cursor_position.desc())
             .limit(1)
         )
         last = result.scalar_one_or_none()
