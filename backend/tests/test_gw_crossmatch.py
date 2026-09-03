@@ -954,7 +954,8 @@ async def test_seed_route_calls_service_and_returns_its_result(monkeypatch):
     assert len(calls) == 1  # seed_gw_events was actually invoked
     body = response.json()
     assert body["status"] == "ok"
-    assert body["events_seeded"] == 12  # the route returns the service's own result
+    # Key renamed to objects_ingested so all six trigger routes share one shape.
+    assert body["objects_ingested"] == 12  # the route returns the service's own result
 
 
 # ---------------------------------------------------------------------------

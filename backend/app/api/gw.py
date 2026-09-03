@@ -9,8 +9,10 @@ Security:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.run_status import UPSTREAM_FAILURE_CODE
 from app.database import get_db
 from app.enrichment.gw_crossmatch import (
     SIGNIFICANCE_TIERS,
@@ -166,6 +168,32 @@ async def get_candidates(request: Request, superevent_id: str, db: AsyncSession 
 @router.post("/seed", dependencies=[Depends(require_admin_key)])
 @limiter.limit("5/minute")
 async def seed_gw_events(request: Request, db: AsyncSession = Depends(get_db)):
-    """Seed GW events. Requires X-API-Key header in production."""
+    """Seed GW events. Requires X-API-Key header in production.
+
+    seed_gw_events writes no IngestionLog row, so unlike the /api/ingest
+    triggers there is no record to read the outcome back from. Its return
+    value is unambiguous instead: every event fetched is either inserted or
+    updated, so a count of 0 can ONLY mean fetch_gwosc_events returned
+    nothing -- i.e. GWOSC was unreachable or served an empty feed. That is an
+    upstream failure, not a quiet success, and was previously reported as
+    {"status": "ok", "events_seeded": 0}.
+    """
     count = await gw_service.seed_gw_events(db)
-    return {"status": "ok", "events_seeded": count}
+    if count == 0:
+        return JSONResponse(
+            status_code=UPSTREAM_FAILURE_CODE,
+            content={
+                "status": "failed",
+                "source": "gwosc",
+                "objects_ingested": 0,
+                "run_id": None,
+                "error": "GWOSC returned no events; nothing was seeded.",
+            },
+        )
+    return {
+        "status": "ok",
+        "source": "gwosc",
+        "objects_ingested": count,
+        "run_id": None,
+        "error": None,
+    }

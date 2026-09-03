@@ -170,8 +170,42 @@ GATED_ROUTES = [
 GATED_ROUTE_IDS = [f"{m} {p}" for m, p, _ in GATED_ROUTES]
 
 
+def _fake_run(status="completed", objects_ingested=None, error=None, run_id=101):
+    """An IngestionLog row as the trigger routes now read it back.
+
+    objects_ingested defaults to None so the route falls through to the
+    service's own return value, which is what these tests assert on.
+    """
+    from app.models.models import IngestionLog
+
+    return IngestionLog(
+        id=run_id,
+        source="test",
+        status=status,
+        objects_ingested=objects_ingested,
+        error_message=error,
+    )
+
+
+def _db_serving(runs):
+    """AsyncMock session whose execute() serves both run_status queries:
+    latest_run_id (scalar_one_or_none) and runs_since (scalars().all())."""
+    def _execute(_stmt):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = 0
+        scalars = MagicMock()
+        scalars.all.return_value = runs
+        result.scalars.return_value = scalars
+        return result
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=_execute)
+    return db
+
+
 async def _mock_db():
-    yield AsyncMock()
+    # Default: the triggered run recorded a completed IngestionLog row.
+    yield _db_serving([_fake_run()])
 
 
 @pytest.mark.asyncio
@@ -247,7 +281,7 @@ async def test_gw_seed_correct_key_invokes_service(admin_auth_configured, monkey
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert response.json()["events_seeded"] == 7
+    assert response.json()["objects_ingested"] == 7
 
 
 @pytest.mark.asyncio
@@ -342,7 +376,7 @@ async def test_fink_trigger_correct_key_invokes_service(admin_auth_configured, m
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert response.json()["alerts_inserted"] == 9
+    assert response.json()["objects_ingested"] == 9
 
 
 @pytest.mark.asyncio
@@ -374,7 +408,7 @@ async def test_chime_trigger_correct_key_invokes_service(admin_auth_configured, 
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert response.json()["frbs_ingested"] == 11
+    assert response.json()["objects_ingested"] == 11
 
 
 @pytest.mark.asyncio
@@ -406,7 +440,7 @@ async def test_lsst_trigger_correct_key_invokes_service(admin_auth_configured, m
 
     assert response.status_code == 200
     assert len(calls) == 1
-    assert response.json()["alerts_inserted"] == 4
+    assert response.json()["objects_ingested"] == 4
 
 
 @pytest.mark.asyncio

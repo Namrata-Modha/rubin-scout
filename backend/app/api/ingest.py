@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.run_status import from_multiple_runs, from_single_run, latest_run_id, runs_since
 from app.config import get_settings
 from app.database import get_db
 from app.ingestion.lsst_service import LsstFinkIngestionService
@@ -34,8 +35,10 @@ async def seed_tns(
     Downloads public CSV files from TNS (no API key needed for the data).
     Requires X-API-Key header in production.
     """
+    before = await latest_run_id(db, "tns_csv")
     count = await tns_service.seed_recent_days(db, days=days)
-    return {"status": "ok", "source": "tns_csv", "days": days, "objects_ingested": count}
+    runs = await runs_since(db, "tns_csv", before)
+    return from_multiple_runs("tns_csv", count, runs, extra={"days": days})
 
 
 @router.post("/tns/daily", dependencies=[Depends(require_admin_key)])
@@ -48,8 +51,10 @@ async def ingest_tns_daily(
     Pull yesterday's TNS daily CSV (most recent complete file).
     This is what the scheduled ingestion runs automatically.
     """
+    before = await latest_run_id(db, "tns_csv")
     count = await tns_service.ingest_from_daily_csv(db)
-    return {"status": "ok", "source": "tns_csv", "objects_ingested": count}
+    runs = await runs_since(db, "tns_csv", before)
+    return from_single_run("tns_csv", count, runs)
 
 
 @router.post("/fink/trigger", dependencies=[Depends(require_admin_key)])
@@ -61,8 +66,10 @@ async def trigger_fink_ingestion(
     """Manually trigger a Fink ingestion run."""
     from app.ingestion.fink_service import FinkIngestionService
     service = FinkIngestionService()
+    before = await latest_run_id(db, "fink_ztf")
     count = await service.ingest(db)
-    return {"status": "ok", "alerts_inserted": count}
+    runs = await runs_since(db, "fink_ztf", before)
+    return from_single_run("fink_ztf", count, runs)
 
 
 @router.post("/chime/trigger", dependencies=[Depends(require_admin_key)])
@@ -78,8 +85,10 @@ async def trigger_chime_ingestion(
     """
     from app.ingestion.chime_service import ChimeFRBIngestionService
     service = ChimeFRBIngestionService()
+    before = await latest_run_id(db, "chimefrb_catalog")
     count = await service.ingest(db)
-    return {"status": "ok", "source": "chimefrb_catalog", "frbs_ingested": count}
+    runs = await runs_since(db, "chimefrb_catalog", before)
+    return from_single_run("chimefrb_catalog", count, runs)
 
 
 @router.post("/lsst/trigger", dependencies=[Depends(require_admin_key)])
@@ -102,8 +111,10 @@ async def trigger_lsst_ingestion(
     """
     from app.ingestion.lsst_service import LsstFinkIngestionService
     service = LsstFinkIngestionService()
+    before = await latest_run_id(db, "fink_lsst")
     count = await service.ingest(db)
-    return {"status": "ok", "source": "fink_lsst", "alerts_inserted": count}
+    runs = await runs_since(db, "fink_lsst", before)
+    return from_single_run("fink_lsst", count, runs)
 
 
 @router.get("/lsst/status")

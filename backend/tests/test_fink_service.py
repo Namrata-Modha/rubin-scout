@@ -19,8 +19,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.models.models import IngestionLog
-
 from app.ingestion.fink_service import (
     FINK_API_URL,
     FINK_CLASSES,
@@ -29,6 +27,7 @@ from app.ingestion.fink_service import (
     _pick_score,
     _strip_lc_features,
 )
+from app.models.models import IngestionLog
 
 # --------------------------------------------------------------------------- #
 # Shared fixture — a realistic single-alert payload from the API audit        #
