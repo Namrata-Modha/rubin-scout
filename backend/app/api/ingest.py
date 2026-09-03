@@ -64,10 +64,10 @@ async def trigger_fink_ingestion(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger a Fink ingestion run."""
-    from app.ingestion.fink_service import FinkIngestionService
+    from app.ingestion.fink_service import TRIGGER_HTTP_MANUAL, FinkIngestionService
     service = FinkIngestionService()
     before = await latest_run_id(db, "fink_ztf")
-    count = await service.ingest(db)
+    count = await service.ingest(db, trigger_source=TRIGGER_HTTP_MANUAL)
     runs = await runs_since(db, "fink_ztf", before)
     return from_single_run("fink_ztf", count, runs)
 

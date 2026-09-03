@@ -359,8 +359,8 @@ async def test_fink_trigger_correct_key_invokes_service(admin_auth_configured, m
 
     calls = []
 
-    async def fake_ingest(self, session):
-        calls.append(session)
+    async def fake_ingest(self, session, trigger_source=None):
+        calls.append(trigger_source)
         return 9
 
     monkeypatch.setattr(FinkIngestionService, "ingest", fake_ingest)
@@ -376,6 +376,9 @@ async def test_fink_trigger_correct_key_invokes_service(admin_auth_configured, m
 
     assert response.status_code == 200
     assert len(calls) == 1
+    # The route must tag the run as HTTP-triggered, so a stored IngestionLog
+    # row distinguishes it from the in-process scheduler's daily cron.
+    assert calls[0] == "http_manual"
     assert response.json()["objects_ingested"] == 9
 
 

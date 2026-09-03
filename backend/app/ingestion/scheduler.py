@@ -25,7 +25,7 @@ from app.enrichment.gw_crossmatch import (
 )
 from app.ingestion.alerce_service import AlerceIngestionService
 from app.ingestion.chime_service import ChimeFRBIngestionService
-from app.ingestion.fink_service import FinkIngestionService
+from app.ingestion.fink_service import TRIGGER_SCHEDULER, FinkIngestionService
 from app.ingestion.lsst_service import MAX_WINDOW_SPAN, LsstFinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
 from app.models.models import Object
@@ -207,7 +207,7 @@ async def run_fink_ingestion():
     logger.info("Starting Fink/ZTF live alert ingestion...")
     async with async_session() as session:
         try:
-            count = await fink_service.ingest(session)
+            count = await fink_service.ingest(session, trigger_source=TRIGGER_SCHEDULER)
             logger.info(f"✓ Fink ingestion complete: {count} alerts inserted")
         except Exception as e:
             logger.error(f"✗ Fink ingestion failed: {e}", exc_info=True)

@@ -50,6 +50,13 @@ _STRIP_FIELDS = frozenset({"d:lc_features_g", "d:lc_features_r"})
 # Stable machine key that identifies this source in alert_sources
 FINK_SOURCE_NAME = "fink_ztf"
 
+# Values for query_params["trigger_source"]. TRIGGER_UNKNOWN is the default
+# so a caller that forgets to pass one is visible in the data rather than
+# silently attributed to either real path.
+TRIGGER_SCHEDULER = "scheduler"
+TRIGGER_HTTP_MANUAL = "http_manual"
+TRIGGER_UNKNOWN = "unknown"
+
 
 # --------------------------------------------------------------------------- #
 # Pure helpers — no I/O, easy to unit-test                                    #
@@ -130,7 +137,9 @@ class FinkIngestionService:
     # Public entry point                                                        #
     # ----------------------------------------------------------------------- #
 
-    async def ingest(self, session: AsyncSession) -> int:
+    async def ingest(
+        self, session: AsyncSession, trigger_source: str = TRIGGER_UNKNOWN
+    ) -> int:
         """Run one full ingestion cycle across all FINK_CLASSES.
 
         Steps:
@@ -141,11 +150,25 @@ class FinkIngestionService:
 
         Rows are never deleted — alerts_live is an append-only detection log.
 
+        Args:
+            trigger_source: which path invoked this -- TRIGGER_SCHEDULER for
+                the in-process cron, TRIGGER_HTTP_MANUAL for the admin route.
+                Recorded on the IngestionLog row so a run can be attributed.
+
         Returns:
             Number of rows **actually inserted** (duplicate skips excluded).
         """
         started_at = datetime.now(timezone.utc)
-        query_params = {"classes": FINK_CLASSES, "n_per_class": ALERTS_PER_CLASS}
+        query_params = {
+            "classes": FINK_CLASSES,
+            "n_per_class": ALERTS_PER_CLASS,
+            # Which mechanism actually fired this run. Two independent
+            # paths reach here -- the in-process APScheduler cron and the
+            # HTTP trigger route -- and until now a stored row looked
+            # identical either way, so an outage could not be attributed
+            # to one of them.
+            "trigger_source": trigger_source,
+        }
 
         log = IngestionLog(
             source=FINK_SOURCE_NAME,
