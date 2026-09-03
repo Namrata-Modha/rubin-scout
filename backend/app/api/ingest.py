@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.run_status import from_multiple_runs, from_single_run, latest_run_id, runs_since
 from app.config import get_settings
 from app.database import get_db
 from app.ingestion.lsst_service import LsstFinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
-from app.api.run_status import from_multiple_runs, from_single_run, latest_run_id, runs_since
 from app.security import limiter, require_admin_key
 
 router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
