@@ -24,6 +24,12 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.models.models import AlertLive, AlertSource, IngestionLog
 
@@ -43,6 +49,26 @@ FINK_CLASSES = [
 ]
 
 ALERTS_PER_CLASS = 100
+
+# Per-attempt HTTP timeout for one class fetch.
+#
+# Deliberately far below the 60s this used to allow. A healthy Fink answers
+# in ~1.1s (measured 2026-09-08 across all four classes) and the slowest
+# healthy full cycle on record is 14s. 60s was roughly 50x the normal
+# response time: nothing useful happens between second 5 and second 60, it
+# just spends the run's budget waiting on something that is not coming.
+#
+# Shrinking this is what pays for the retries below. Worst case per class is
+# now 3 x 15s of waiting plus ~3s of backoff = ~48s, against 60s before, so
+# a completely dead Fink costs LESS wall-clock than it used to (~192s over
+# four classes, down from ~240s) while a brief blip now recovers instead of
+# losing the whole run.
+FETCH_TIMEOUT_SECONDS = 15.0
+
+# Attempts per class, matching app/api/images.py's stop_after_attempt(3).
+# With the backoff below, the third attempt starts ~33s after the first, so
+# any outage shorter than roughly half a minute is ridden out.
+FETCH_MAX_ATTEMPTS = 3
 
 # These fields are large string blobs (~500 chars each).  Strip them before
 # storing in raw_payload JSONB to avoid unnecessary column bloat.
@@ -341,6 +367,10 @@ class FinkIngestionService:
     async def _fetch_class(self, class_name: str) -> Optional[list[dict]]:
         """POST to Fink ``/api/v1/latests`` for one classification class.
 
+        Transport failures are retried up to ``FETCH_MAX_ATTEMPTS`` times with
+        exponential backoff; a non-200 response or unparseable body is not
+        retried, since re-asking will not change either.
+
         Returns:
             List of alert dicts on success.
             ``None`` on any HTTP or parse error (caller should treat as failure).
@@ -351,17 +381,45 @@ class FinkIngestionService:
             "output-format": "json",
         }
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(self._api_url, json=payload)
+            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_SECONDS) as client:
+                # Retry transport failures only -- timeouts, connection resets,
+                # protocol errors. httpx.TransportError is exactly that set and
+                # deliberately excludes HTTPStatusError: a real 4xx/5xx from
+                # Fink is an answer, and asking three times does not change it.
+                # (A non-200 never reaches here anyway; it is handled below
+                # without raising, so it is not retried either way.)
+                #
+                # reraise=True is the one deliberate divergence from
+                # images.py's pattern: it surfaces the original httpx error
+                # instead of wrapping it in RetryError, which keeps the
+                # exception type in the log line below meaningful.
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(FETCH_MAX_ATTEMPTS),
+                    wait=wait_exponential(multiplier=1, min=1, max=10),
+                    retry=retry_if_exception_type(httpx.TransportError),
+                    before_sleep=lambda rs: logger.warning(
+                        "Fink fetch for class %r failed with %s, retrying "
+                        "(attempt %d/%d)",
+                        class_name,
+                        type(rs.outcome.exception()).__name__,
+                        rs.attempt_number,
+                        FETCH_MAX_ATTEMPTS,
+                    ),
+                    reraise=True,
+                ):
+                    with attempt:
+                        resp = await client.post(self._api_url, json=payload)
         except httpx.HTTPError as exc:
-            # Log the exception TYPE, not just str(exc). Every httpx timeout
-            # and connection error stringifies to the empty string, so the
-            # old "...class 'X': " line ended at the colon and said nothing
-            # about what actually went wrong -- a ReadTimeout and a
-            # ConnectError were indistinguishable in the logs.
+            # Distinct from the per-attempt warning above: this line means we
+            # gave up, so a log read can tell "recovered after retry" from
+            # "exhausted every attempt". Logs the exception TYPE because every
+            # httpx timeout and connection error stringifies to the empty
+            # string -- a ReadTimeout and a ConnectError were previously
+            # indistinguishable in the logs.
             logger.error(
-                "HTTP error fetching Fink class %r: %s: %s",
-                class_name, type(exc).__name__, str(exc) or "(no message)",
+                "Giving up on Fink class %r after %d attempt(s): %s: %s",
+                class_name, FETCH_MAX_ATTEMPTS, type(exc).__name__,
+                str(exc) or "(no message)",
             )
             return None
 
