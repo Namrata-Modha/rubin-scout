@@ -16,6 +16,7 @@ Confirmed reachable from Render's network during Sprint 4 testing.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -61,6 +62,36 @@ TRIGGER_UNKNOWN = "unknown"
 # --------------------------------------------------------------------------- #
 # Pure helpers — no I/O, easy to unit-test                                    #
 # --------------------------------------------------------------------------- #
+
+# Characters Postgres cannot store inside a jsonb string. A NUL makes asyncpg
+# raise UntranslatableCharacterError ("unsupported Unicode escape sequence")
+# and reject the whole statement; lone UTF-16 surrogates are equally
+# unstorable. Both are stripped rather than allowed to cost an entire alert.
+#
+# This is not hypothetical. Fink began serving d:blazar_stats_m0/m1/m2 as a
+# lossily-decoded 4-byte float -- '\ufffd\ufffd\x00\x00' -- instead of the
+# number it had always been (verified 2026-09-08: 55/100 "Early SN Ia
+# candidate" and 100/100 "Kilonova candidate" alerts affected). The scrub is
+# deliberately field-agnostic so the next field Fink mangles costs nothing.
+_PG_UNSAFE_CHARS = re.compile(r"[\x00\ud800-\udfff]")
+
+
+def _scrub_pg_unsafe(value):
+    """Recursively strip jsonb-unstorable characters from a decoded payload.
+
+    Only the offending characters are removed; whatever else the field holds
+    is preserved verbatim. Dropping the field or nulling it would discard
+    information we were sent, and losing the surrounding alert -- 80+ other
+    fields -- over one mangled value is far worse than storing it truncated.
+    """
+    if isinstance(value, str):
+        return _PG_UNSAFE_CHARS.sub("", value)
+    if isinstance(value, dict):
+        return {k: _scrub_pg_unsafe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_pg_unsafe(v) for v in value]
+    return value
+
 
 def _strip_lc_features(alert: dict) -> dict:
     """Return a shallow copy of *alert* with lc_features_g/r removed.
@@ -323,8 +354,14 @@ class FinkIngestionService:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(self._api_url, json=payload)
         except httpx.HTTPError as exc:
+            # Log the exception TYPE, not just str(exc). Every httpx timeout
+            # and connection error stringifies to the empty string, so the
+            # old "...class 'X': " line ended at the colon and said nothing
+            # about what actually went wrong -- a ReadTimeout and a
+            # ConnectError were indistinguishable in the logs.
             logger.error(
-                "HTTP error fetching Fink class %r: %s", class_name, exc
+                "HTTP error fetching Fink class %r: %s: %s",
+                class_name, type(exc).__name__, str(exc) or "(no message)",
             )
             return None
 
@@ -371,7 +408,7 @@ class FinkIngestionService:
         Returns:
             ``1`` if the row was inserted, ``0`` if it was a duplicate.
         """
-        stripped = _strip_lc_features(alert)
+        stripped = _scrub_pg_unsafe(_strip_lc_features(alert))
 
         stmt = (
             pg_insert(AlertLive)
