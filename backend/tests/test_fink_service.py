@@ -18,9 +18,11 @@ import json
 from datetime import timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.ingestion.fink_service import (
+    FETCH_MAX_ATTEMPTS,
     FINK_API_URL,
     FINK_CLASSES,
     FinkIngestionService,
@@ -548,3 +550,154 @@ async def test_alert_with_nul_is_no_longer_skipped(monkeypatch):
     inserted = await service.ingest(session)
 
     assert inserted == 1  # not skipped
+
+
+# ---------------------------------------------------------------------------
+# _fetch_class retry
+#
+# A single 60s timeout used to lose an entire run, and /latests has no date
+# window so a failed run's alerts are unrecoverable once they age off the
+# latest-N window. Transport failures are now retried; a real HTTP status or
+# an unparseable body is not, because re-asking cannot change either.
+#
+# Backoff is patched out in these tests -- the point under test is the retry
+# decision, not tenacity's ability to sleep.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    """Make tenacity's waits instant so the tests don't actually sleep."""
+    import tenacity
+    monkeypatch.setattr(tenacity.nap, "sleep", lambda _s: None)
+
+    async def _asleep(_s):
+        return None
+    monkeypatch.setattr("asyncio.sleep", _asleep)
+
+
+@pytest.mark.asyncio
+async def test_fetch_recovers_after_a_transient_failure(no_backoff, monkeypatch):
+    """First attempt times out, second succeeds -- the run keeps its data."""
+    service = FinkIngestionService()
+    calls = {"n": 0}
+
+    async def flaky_post(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("")
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = [SAMPLE_ALERT]
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", flaky_post)
+
+    result = await service._fetch_class(FINK_CLASSES[0])
+
+    assert result == [SAMPLE_ALERT]   # recovered, not lost
+    assert calls["n"] == 2            # exactly one retry was needed
+
+
+@pytest.mark.asyncio
+async def test_fetch_gives_up_cleanly_after_exhausting_attempts(no_backoff, monkeypatch):
+    """Every attempt fails: return None rather than raising, so the caller's
+    had_http_error path still runs and the row records a failure."""
+    service = FinkIngestionService()
+    calls = {"n": 0}
+
+    async def always_timeout(self, url, **kw):
+        calls["n"] += 1
+        raise httpx.ConnectTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", always_timeout)
+
+    result = await service._fetch_class(FINK_CLASSES[0])
+
+    assert result is None
+    assert calls["n"] == FETCH_MAX_ATTEMPTS   # tried, and only tried, 3 times
+
+
+@pytest.mark.asyncio
+async def test_a_real_http_status_is_not_retried(no_backoff, monkeypatch):
+    """A 404 from Fink is an answer. Asking again three times wastes the
+    run's budget without changing it."""
+    service = FinkIngestionService()
+    calls = {"n": 0}
+
+    async def not_found(self, url, **kw):
+        calls["n"] += 1
+        response = MagicMock()
+        response.status_code = 404
+        response.text = "no such class"
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", not_found)
+
+    result = await service._fetch_class(FINK_CLASSES[0])
+
+    assert result is None
+    assert calls["n"] == 1  # NOT retried
+
+
+@pytest.mark.asyncio
+async def test_unparseable_body_is_not_retried(no_backoff, monkeypatch):
+    """Same reasoning: a malformed body will be malformed again."""
+    service = FinkIngestionService()
+    calls = {"n": 0}
+
+    async def bad_json(self, url, **kw):
+        calls["n"] += 1
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("not json")
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", bad_json)
+
+    result = await service._fetch_class(FINK_CLASSES[0])
+
+    assert result is None
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_healthy_fetch_makes_exactly_one_request(no_backoff, monkeypatch):
+    """The normal case must be untouched: one request, no retry machinery
+    cost, no sleep before the first attempt."""
+    service = FinkIngestionService()
+    calls = {"n": 0}
+
+    async def ok(self, url, **kw):
+        calls["n"] += 1
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = [SAMPLE_ALERT]
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", ok)
+
+    result = await service._fetch_class(FINK_CLASSES[0])
+
+    assert result == [SAMPLE_ALERT]
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_and_giving_up_are_logged_distinctly(no_backoff, monkeypatch, caplog):
+    """A log read must be able to tell "recovered after retry" from
+    "exhausted every attempt"."""
+    service = FinkIngestionService()
+
+    async def always_timeout(self, url, **kw):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", always_timeout)
+
+    with caplog.at_level("WARNING"):
+        await service._fetch_class(FINK_CLASSES[0])
+
+    text = caplog.text
+    assert "retrying (attempt 1/3)" in text     # per-attempt warning
+    assert "Giving up on Fink class" in text    # distinct final error
+    # The exception type is named, not swallowed into an empty string.
+    assert "ReadTimeout" in text
