@@ -14,6 +14,7 @@ Three tests:
      _insert_alert does not raise and returns 0.
 """
 
+import json
 from datetime import timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +26,7 @@ from app.ingestion.fink_service import (
     FinkIngestionService,
     _parse_lastdate,
     _pick_score,
+    _scrub_pg_unsafe,
     _strip_lc_features,
 )
 from app.models.models import IngestionLog
@@ -443,3 +445,106 @@ async def test_failure_record_survives_a_poisoned_session(monkeypatch):
     # Rollback cleared the poison, so the failure record's commit went through.
     assert poisoned["value"] is False
     session.commit.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _scrub_pg_unsafe
+#
+# Postgres cannot store a NUL (or a lone UTF-16 surrogate) inside a jsonb
+# string: asyncpg raises UntranslatableCharacterError, "unsupported Unicode
+# escape sequence", and the whole INSERT is rejected. Fink began serving
+# d:blazar_stats_m0/m1/m2 as a lossily-decoded 4-byte float rather than a
+# number, so alerts carrying it were being skipped in their entirety.
+# ---------------------------------------------------------------------------
+
+# The exact value Fink serves, captured live 2026-09-08.
+FINK_MANGLED_BLAZAR = "\ufffd\ufffd\x00\x00"
+
+
+def test_scrub_removes_the_real_fink_value():
+    """Two replacement chars survive; the two trailing NULs do not."""
+    assert _scrub_pg_unsafe(FINK_MANGLED_BLAZAR) == "\ufffd\ufffd"
+
+
+def test_scrub_removes_lone_surrogates():
+    assert _scrub_pg_unsafe("a\ud800b\udfffc") == "abc"
+
+
+def test_scrub_recurses_through_dicts_and_lists():
+    payload = {"d:blazar_stats_m0": "x\x00", "nested": {"k": ["a\x00b", "ok"]}}
+    assert _scrub_pg_unsafe(payload) == {
+        "d:blazar_stats_m0": "x",
+        "nested": {"k": ["ab", "ok"]},
+    }
+
+
+def test_scrub_leaves_everything_else_untouched():
+    """Numbers, nulls and booleans must not be coerced to strings, and a clean
+    string must come back byte-identical."""
+    assert _scrub_pg_unsafe(-1.0) == -1.0
+    assert _scrub_pg_unsafe(None) is None
+    assert _scrub_pg_unsafe(42) == 42
+    assert _scrub_pg_unsafe(True) is True
+    assert _scrub_pg_unsafe("SN candidate") == "SN candidate"
+    # Tab/newline are legal in jsonb and must survive.
+    assert _scrub_pg_unsafe("a\tb\nc") == "a\tb\nc"
+
+
+@pytest.mark.asyncio
+async def test_insert_alert_stores_a_scrubbed_payload():
+    """The value actually bound into the INSERT carries no NUL.
+
+    Asserted on the statement's parameters rather than the return value: the
+    row is what Postgres would have rejected, so that is what must be clean.
+    """
+    service = FinkIngestionService()
+    alert = {
+        **SAMPLE_ALERT,
+        "d:blazar_stats_m0": FINK_MANGLED_BLAZAR,
+        "d:blazar_stats_m1": FINK_MANGLED_BLAZAR,
+    }
+
+    captured = {}
+
+    async def capture(stmt):
+        captured["stmt"] = stmt
+        result = MagicMock()
+        result.rowcount = 1
+        return result
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=capture)
+
+    await service._insert_alert(session, alert, FINK_CLASSES[0], 1)
+
+    params = captured["stmt"].compile().params
+    payload = params["raw_payload"]
+    assert payload["d:blazar_stats_m0"] == "\ufffd\ufffd"
+    assert "\x00" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_alert_with_nul_is_no_longer_skipped(monkeypatch):
+    """End to end: an alert Fink mangles must now be ingested, not dropped.
+
+    Before the scrub this raised inside _insert_alert, the savepoint rolled it
+    back, and the alert was lost with only a warning.
+    """
+    service = FinkIngestionService()
+    alert = {**SAMPLE_ALERT, "d:blazar_stats_m0": FINK_MANGLED_BLAZAR}
+
+    async def fake_fetch(class_name):
+        return [alert] if class_name == FINK_CLASSES[0] else []
+    monkeypatch.setattr(service, "_fetch_class", fake_fetch)
+
+    source = MagicMock()
+    source.id = 1
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = source
+    result.rowcount = 1
+    session = _mock_session()
+    session.execute = AsyncMock(return_value=result)
+
+    inserted = await service.ingest(session)
+
+    assert inserted == 1  # not skipped
