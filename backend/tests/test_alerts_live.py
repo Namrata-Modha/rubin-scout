@@ -11,6 +11,7 @@ No real database or HTTP calls — DB sessions are replaced with AsyncMock via
 dependency_overrides, following the same pattern as test_api.py.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -99,6 +100,9 @@ class TestExtractPayloadFields:
     """_extract_payload_fields must map Fink raw_payload keys to typed groups."""
 
     EXPECTED_KEYS = {
+        # "survey" is the discriminator the detail page dispatches on; every
+        # extraction now returns it.
+        "survey",
         "coords", "photometry", "classification_scores",
         "context", "crossmatch", "host", "object_id",
     }
@@ -636,3 +640,171 @@ async def test_live_alert_detail_empty_raw_payload():
         assert data["object_id"] is None
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+# ---------------------------------------------------------------------------
+# LSST payload extraction
+#
+# ZTF and Rubin share alerts_live but not their schema: flux photometry
+# instead of magnitudes, r:reliability instead of d:drb, per-catalog f:xm_*
+# fields instead of a single d:cdsxmatch. _extract_payload_fields dispatches
+# on alert_type so each survey gets semantic field names the page can render
+# directly, with the flux conversion done here once rather than in JSX.
+#
+# NOTE: alerts_live held ZERO lsst_fink rows when this was written, so these
+# assertions are built on SAMPLE_LSST_ALERT (trimmed from a real live alert)
+# and field PRESENCE is unvalidated against a production payload.
+# ---------------------------------------------------------------------------
+
+from app.api.alerts_live import (  # noqa: E402
+    _extract_lsst_fields,
+    _flux_to_ab_magnitude,
+)
+
+LSST_ALERT = {
+    "r:diaObjectId": 170587117485293571,
+    "r:diaSourceId": 170666304474710105,
+    "r:ra": 62.1275130736,
+    "r:dec": -48.5188143359,
+    "r:midpointMjdTai": 61235.4191836794,
+    "r:band": "i",
+    "r:snr": 61.19352,
+    "r:psfFlux": -6577.8823,
+    "r:psfFluxErr": 734.8993,
+    "r:reliability": 0.5290438,
+    "r:reliabilityVersion": "0.3",
+    "f:clf_cats_class": 11,
+    "f:clf_cats_score": 0.9792307,
+    "f:clf_earlySNIa_score": -1.0,
+    "f:clf_snnSnVsOthers_score": 0.77453464,
+    "f:xm_simbad_otype": "Fail",
+    "f:xm_tns_fullname": None,
+}
+
+
+# --- flux -> magnitude ------------------------------------------------------
+
+def test_positive_flux_converts_with_the_lsst_zeropoint():
+    """AB mag = 31.4 - 2.5*log10(F/nJy). 1 nJy is exactly the zeropoint."""
+    assert _flux_to_ab_magnitude(1.0) == pytest.approx(31.4)
+    # A factor of 100 in flux is exactly 5 magnitudes.
+    assert _flux_to_ab_magnitude(100.0) == pytest.approx(26.4)
+
+
+def test_negative_and_zero_flux_have_no_magnitude():
+    """Difference flux is routinely negative -- the source is fainter than the
+    template -- and has no magnitude. Must be None, never NaN."""
+    assert _flux_to_ab_magnitude(-6577.8823) is None
+    assert _flux_to_ab_magnitude(0.0) is None
+    assert _flux_to_ab_magnitude(None) is None
+
+
+# --- the two flux-sign branches --------------------------------------------
+
+def test_negative_flux_reports_fading_without_a_magnitude():
+    out = _extract_lsst_fields(LSST_ALERT)
+    b = out["brightness"]
+    assert b["magnitude"] is None
+    assert b["trend"] == "fading"
+    assert "dimmer than the reference image" in b["explanation"]
+    assert b["flux_njy"] == -6577.8823
+
+
+def test_positive_flux_reports_a_magnitude_and_brightening():
+    out = _extract_lsst_fields({**LSST_ALERT, "r:psfFlux": 100.0})
+    b = out["brightness"]
+    assert b["magnitude"] == pytest.approx(26.4)
+    assert b["trend"] == "brightening"
+    assert "lower number means a brighter source" in b["explanation"]
+
+
+def test_snr_is_reported_regardless_of_flux_sign():
+    """SNR is the detection-confidence number and must survive either branch."""
+    for flux in (-6577.8823, 100.0):
+        b = _extract_lsst_fields({**LSST_ALERT, "r:psfFlux": flux})["brightness"]
+        assert b["snr"] == pytest.approx(61.19352)
+        assert "Overwhelmingly significant" in b["snr_explanation"]
+
+
+# --- omission rather than empty rendering -----------------------------------
+
+def test_unscored_classifiers_are_omitted_not_zeroed():
+    """Fink writes -1.0 for a classifier it did not run. That must disappear,
+    not render as a 0% bar."""
+    keys = {s["key"] for s in _extract_lsst_fields(LSST_ALERT)["classifier_scores"]}
+    assert keys == {"cats", "snn_sn_vs_others"}   # early_snia was -1.0
+    assert "early_snia" not in keys
+
+
+def test_cats_score_carries_no_invented_class_label():
+    """f:clf_cats_class is a bare integer with no documented taxonomy here, so
+    the score is reported and the class index is not named."""
+    out = _extract_lsst_fields(LSST_ALERT)
+    cats = next(s for s in out["classifier_scores"] if s["key"] == "cats")
+    assert cats["value"] == pytest.approx(0.9792307)
+    assert "11" not in cats["label"]
+    assert json.dumps(out).find("clf_cats_class") == -1
+
+
+def test_failed_and_empty_crossmatches_are_omitted_entirely():
+    """simbad is "Fail" and tns is None here, so the whole section goes away
+    rather than rendering two dashes."""
+    assert "crossmatch" not in _extract_lsst_fields(LSST_ALERT)
+
+
+def test_present_crossmatches_are_returned():
+    out = _extract_lsst_fields({**LSST_ALERT, "f:xm_tns_fullname": "SN 2026abc"})
+    assert [m["value"] for m in out["crossmatch"]] == ["SN 2026abc"]
+
+
+def test_missing_reliability_omits_the_quality_section():
+    payload = {k: v for k, v in LSST_ALERT.items() if k != "r:reliability"}
+    assert "quality" not in _extract_lsst_fields(payload)
+
+
+def test_an_almost_empty_payload_does_not_raise():
+    """Field presence varies between Fink schema revisions; nothing here may
+    depend on a key existing."""
+    out = _extract_lsst_fields({"r:diaObjectId": 1})
+    assert out["survey"] == "lsst_fink"
+    assert out["brightness"]["magnitude"] is None
+    assert "quality" not in out
+    assert "classifier_scores" not in out
+
+
+def test_mjd_converts_to_jd_by_the_exact_identity():
+    out = _extract_lsst_fields(LSST_ALERT)
+    assert out["coords"]["jd"] == pytest.approx(61235.4191836794 + 2400000.5)
+    assert out["coords"]["mjd"] == pytest.approx(61235.4191836794)
+
+
+# --- dispatch, and ZTF left exactly as it was -------------------------------
+
+def test_dispatch_routes_lsst_and_defaults_to_ztf():
+    assert _extract_payload_fields(LSST_ALERT, "lsst_fink")["survey"] == "lsst_fink"
+    assert _extract_payload_fields({}, "ztf_fink")["survey"] == "ztf_fink"
+    # Unknown or missing alert_type keeps the pre-existing ZTF behaviour.
+    assert _extract_payload_fields({}, None)["survey"] == "ztf_fink"
+    assert _extract_payload_fields({})["survey"] == "ztf_fink"
+
+
+def test_ztf_extraction_output_is_unchanged():
+    """The ZTF shape every existing caller depends on, other than the added
+    `survey` discriminator."""
+    ztf = {
+        "i:objectId": "ZTF26aavemst", "i:ra": 1.0, "i:dec": 2.0, "i:jd": 3.0,
+        "i:magpsf": 18.5, "i:sigmapsf": 0.1, "i:drb": 0.99,
+        "d:snn_sn_vs_all": 0.9, "d:cdsxmatch": "SN", "v:classification": "SN candidate",
+        "i:classtar": 0.5,
+    }
+    out = _extract_payload_fields(ztf, "ztf_fink")
+    assert out["coords"] == {"ra": 1.0, "dec": 2.0, "jd": 3.0}
+    assert out["photometry"]["magpsf"] == 18.5
+    assert out["photometry"]["drb"] == 0.99
+    assert out["classification_scores"]["snn_sn_vs_all"] == 0.9
+    assert out["crossmatch"]["cdsxmatch"] == "SN"
+    assert out["host"]["classtar"] == 0.5
+    assert out["object_id"] == "ZTF26aavemst"
+    # LSST-only keys must not leak into a ZTF payload.
+    for absent in ("brightness", "quality", "classifier_scores"):
+        assert absent not in out
