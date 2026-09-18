@@ -12,12 +12,14 @@ the full field comparison against ZTF).
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from astropy.time import Time
 
 from app.ingestion.lsst_service import (
     CLUSTER_FETCH_SIZE,
     DEFAULT_LOOKBACK_HOURS,
+    FETCH_MAX_ATTEMPTS,
     LSST_SOURCE_NAME,
     LSST_TAGS,
     MAX_PAGES_PER_TAG,
@@ -979,3 +981,142 @@ async def test_get_window_start_reads_cursor_position_not_completed_at():
     # completed_at must not appear anywhere -- not selected, not filtered on,
     # not ordered by.
     assert "completed_at" not in sql
+
+
+# --------------------------------------------------------------------------- #
+# _fetch_page retry
+#
+# Repeated HTTP 504 clusters (2026-09-13 21:07-22:07, 2026-09-14 01:52-02:07)
+# degraded whole cycles to "partial" with no retry at all. The cursor design
+# meant nothing was skipped, but every one of those cycles was wasted work.
+#
+# The divergence from fink_service matters here: those 504s arrive as an HTTP
+# *status*, not an exception, so a TransportError-only predicate would not
+# have retried a single one. Backoff is patched out -- the retry decision is
+# what is under test, not tenacity's ability to sleep.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    import tenacity
+    monkeypatch.setattr(tenacity.nap, "sleep", lambda _s: None)
+
+    async def _asleep(_s):
+        return None
+    monkeypatch.setattr("asyncio.sleep", _asleep)
+
+
+def _response(status, payload=None):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = "body"
+    if payload is not None:
+        resp.json.return_value = payload
+
+    def _raise():
+        if status >= 400:
+            raise httpx.HTTPStatusError("err", request=MagicMock(), response=resp)
+    resp.raise_for_status.side_effect = _raise
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_retries_a_504_and_recovers(no_backoff, monkeypatch):
+    """The exact production failure: a gateway timeout that then clears."""
+    service = _make_service()
+    calls = {"n": 0}
+
+    async def flaky_get(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _response(504)
+        return _response(200, [SAMPLE_LSST_ALERT])
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", flaky_get)
+
+    result = await service._fetch_page("most_likely_sn", "s", "e")
+
+    assert result == [SAMPLE_LSST_ALERT]   # cycle completes instead of partial
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_retries_transport_errors_too(no_backoff, monkeypatch):
+    service = _make_service()
+    calls = {"n": 0}
+
+    async def flaky_get(self, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("")
+        return _response(200, [SAMPLE_LSST_ALERT])
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", flaky_get)
+
+    assert await service._fetch_page("most_likely_sn", "s", "e") == [SAMPLE_LSST_ALERT]
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_gives_up_after_exhausting_attempts(no_backoff, monkeypatch):
+    """Persistent 504 returns None so the caller leaves the cursor alone."""
+    service = _make_service()
+    calls = {"n": 0}
+
+    async def always_504(self, url, **kw):
+        calls["n"] += 1
+        return _response(504)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", always_504)
+
+    assert await service._fetch_page("most_likely_sn", "s", "e") is None
+    assert calls["n"] == FETCH_MAX_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_fetch_page_does_not_retry_a_404(no_backoff, monkeypatch):
+    """A 4xx is an answer. Re-asking three times just burns the cycle."""
+    service = _make_service()
+    calls = {"n": 0}
+
+    async def not_found(self, url, **kw):
+        calls["n"] += 1
+        return _response(404)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", not_found)
+
+    assert await service._fetch_page("most_likely_sn", "s", "e") is None
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_healthy_fetch_page_makes_exactly_one_request(no_backoff, monkeypatch):
+    """No added latency or requests on the normal path."""
+    service = _make_service()
+    calls = {"n": 0}
+
+    async def ok(self, url, **kw):
+        calls["n"] += 1
+        return _response(200, [SAMPLE_LSST_ALERT])
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", ok)
+
+    assert await service._fetch_page("most_likely_sn", "s", "e") == [SAMPLE_LSST_ALERT]
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_and_giving_up_are_logged_distinctly(no_backoff, monkeypatch, caplog):
+    service = _make_service()
+
+    async def always_504(self, url, **kw):
+        return _response(504)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", always_504)
+
+    with caplog.at_level("WARNING"):
+        await service._fetch_page("most_likely_sn", "s", "e")
+
+    assert "retrying (attempt 1/3)" in caplog.text
+    assert "Giving up on LSST tag" in caplog.text
+    assert "HTTPStatusError" in caplog.text

@@ -167,6 +167,12 @@ from astropy.time import Time
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.models.models import AlertLive, AlertSource, IngestionLog
 
@@ -225,6 +231,39 @@ MAX_WINDOW_SPAN = timedelta(minutes=30)
 # largest same-timestamp cluster found so far is 2,288 alerts, giving
 # ~2.2x headroom. Details: docs/lsst-ingestion-recovery.md.
 CLUSTER_FETCH_SIZE = 5000
+
+# Per-attempt HTTP timeout for one page, down from a single 90s attempt.
+#
+# Same reasoning as fink_service's FETCH_TIMEOUT_SECONDS, but NOT the same
+# number: Fink/ZTF pulls 100 records per request and answers in ~1s, while a
+# page here is up to PAGE_SIZE=500 (CLUSTER_FETCH_SIZE=5000 on a recovery
+# fetch), so it needs real headroom for when Rubin is observing again.
+#
+# 30s x 3 attempts plus ~3s of backoff is ~93s of worst case per request,
+# against the 90s a single attempt could already burn. So retries are
+# essentially free in worst-case terms while turning a transient 504 from a
+# lost cycle into a recovered one.
+FETCH_TIMEOUT_SECONDS = 30.0
+
+# Attempts per page, matching fink_service and app/api/images.py.
+FETCH_MAX_ATTEMPTS = 3
+
+# Gateway statuses worth re-asking. THIS IS THE DIVERGENCE FROM FINK: the
+# 504s that cost whole LSST cycles on 2026-09-13/14 arrive as an HTTP
+# *status*, not as an exception, so fink_service's TransportError-only
+# predicate would not have retried a single one of them. A 4xx still is not
+# retried -- that is an answer, not a hiccup.
+_RETRYABLE_STATUSES = frozenset({502, 503, 504})
+
+
+def _is_retryable_fetch_error(exc: BaseException) -> bool:
+    """Transport failures, plus the gateway statuses that mean 'try again'."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code in _RETRYABLE_STATUSES
+    )
 
 # How many consecutive "partial" IngestionLog cycles with an IDENTICAL
 # window_start must be observed before check_stall() reports a stall. Only
@@ -668,10 +707,37 @@ class LsstFinkIngestionService:
             "output-format": "json",
         }
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                resp = await client.get(self._api_url, params=params)
+            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_SECONDS) as client:
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(FETCH_MAX_ATTEMPTS),
+                    wait=wait_exponential(multiplier=1, min=1, max=10),
+                    retry=retry_if_exception(_is_retryable_fetch_error),
+                    before_sleep=lambda rs: logger.warning(
+                        "LSST fetch for tag %r failed with %s, retrying "
+                        "(attempt %d/%d)",
+                        tag,
+                        type(rs.outcome.exception()).__name__,
+                        rs.attempt_number,
+                        FETCH_MAX_ATTEMPTS,
+                    ),
+                    reraise=True,
+                ):
+                    with attempt:
+                        resp = await client.get(self._api_url, params=params)
+                        # Turn a retryable gateway status into an exception so
+                        # tenacity can see it. Every other status falls through
+                        # to the non-200 branch below and is NOT retried.
+                        if resp.status_code in _RETRYABLE_STATUSES:
+                            resp.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("HTTP error fetching LSST tag %r: %s", tag, exc)
+            # Distinct from the per-attempt warning above: this means we gave
+            # up. Logs the exception TYPE because httpx timeouts and connection
+            # errors all stringify to the empty string.
+            logger.error(
+                "Giving up on LSST tag %r after %d attempt(s): %s: %s",
+                tag, FETCH_MAX_ATTEMPTS, type(exc).__name__,
+                str(exc) or "(no message)",
+            )
             return None
 
         if resp.status_code != 200:

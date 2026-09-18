@@ -190,7 +190,14 @@ class TNSIngestionService:
             log_entry.error_message = str(e)[:500]
             log_entry.completed_at = datetime.now(timezone.utc)
             await session.commit()
-            logger.error(f"TNS CSV ingestion failed: {e}", exc_info=True)
+            # Log the exception TYPE alongside the message: every httpx
+            # timeout and connection error stringifies to the empty string,
+            # so this line used to read "TNS CSV ingestion failed: " and say
+            # nothing about what went wrong. Same fix as fink_service.
+            logger.error(
+                "TNS CSV ingestion failed: %s: %s",
+                type(e).__name__, str(e) or "(no message)", exc_info=True,
+            )
             return 0
 
     async def _process_csv_zip(self, session, zip_bytes):
