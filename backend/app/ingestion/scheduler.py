@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.database import async_session
 from app.enrichment.crossmatch import EnrichmentService
 from app.enrichment.gw_crossmatch import (
+    GWOSC_API_URL,
     GWCrossMatchService,
     _fetch_gwosc_payload,
     fetch_gwosc_catalog_index,
@@ -28,7 +29,7 @@ from app.ingestion.chime_service import ChimeFRBIngestionService
 from app.ingestion.fink_service import TRIGGER_SCHEDULER, FinkIngestionService
 from app.ingestion.lsst_service import MAX_WINDOW_SPAN, LsstFinkIngestionService
 from app.ingestion.tns_service import TNSIngestionService
-from app.models.models import Object
+from app.models.models import IngestionLog, Object
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -40,6 +41,13 @@ fink_service = FinkIngestionService()
 lsst_service = LsstFinkIngestionService()
 enrichment_service = EnrichmentService()
 gw_service = GWCrossMatchService()
+
+# IngestionLog.source for the weekly GWOSC refresh. Named for the data source
+# rather than the job, matching every other value in that column --
+# alerce_api, chimefrb_catalog, fink_ztf, fink_lsst, tns_csv. "gw_refresh"
+# would have been the odd one out, describing the schedule instead of where
+# the rows come from.
+GW_SOURCE_NAME = "gwosc_catalog"
 
 # 15 minutes -- confirmed against real Fink LSST data (see
 # docs/lsst-ingestion-recovery.md): the worst known 15-minute burst carried
@@ -130,6 +138,31 @@ async def keepalive_ping():
             logger.warning(f"Keep-alive ping failed: {e}")
 
 
+async def _record_reconciliation(session, log, summary: dict) -> None:
+    """Attach the reconciliation outcome to the refresh's IngestionLog row.
+
+    Best-effort and never raises: the seed it belongs to is already committed,
+    so failing to annotate it must not turn a successful refresh into an
+    error. Writes into query_params rather than status for the same reason.
+    """
+    try:
+        await session.rollback()
+        merged = dict(log.query_params or {})
+        merged["reconciliation"] = {
+            "retired": len(summary.get("retired", [])),
+            "retired_unresolved": len(summary.get("retired_unresolved", [])),
+            "unretired": len(summary.get("unretired", [])),
+            "skipped_reason": summary.get("skipped_reason"),
+            "error": summary.get("error"),
+        }
+        # No session.add: `log` is already persistent by this point, so
+        # mutating it is enough for the flush to emit an UPDATE.
+        log.query_params = merged
+        await session.commit()
+    except Exception as exc:
+        logger.warning("Could not record reconciliation summary: %s", exc)
+
+
 async def refresh_gw_events():
     """Re-seed GW events from GWOSC, then reconcile retired superevent IDs.
 
@@ -148,13 +181,61 @@ async def refresh_gw_events():
     before a retired row can be pointed at it.
     """
     logger.info("Refreshing GW events from GWOSC...")
+    started_at = datetime.now(timezone.utc)
+    query_params = {
+        "url": GWOSC_API_URL,
+        "trigger_source": "scheduler",
+    }
+
     async with async_session() as session:
+        # This job was the only scheduled one writing no IngestionLog row, so
+        # there was no way to tell whether the weekly refresh had run at all.
+        # The row is created up front, exactly as the other sources do, so a
+        # run that dies mid-flight still leaves a trace.
+        log = IngestionLog(
+            source=GW_SOURCE_NAME,
+            query_params=query_params,
+            status="running",
+            started_at=started_at,
+        )
+        session.add(log)
+        await session.flush()
+
         try:
             payload = await _fetch_gwosc_payload()
             count = await gw_service.seed_gw_events(session, payload=payload)
+            # seed_gw_events commits internally, which also commits the row
+            # above; this second commit records the outcome on it.
+            log.objects_ingested = count
+            log.status = "completed"
+            log.completed_at = datetime.now(timezone.utc)
+            await session.commit()
             logger.info(f"✓ GW refresh complete: {count} new events seeded")
         except Exception as e:
             logger.error(f"✗ GW event refresh failed: {e}", exc_info=True)
+            try:
+                # Roll back first: whatever raised may have left the
+                # transaction aborted, and every further statement -- the
+                # commit included -- would fail with it. The rollback also
+                # discards the uncommitted "running" row, so the failure has
+                # to be a NEW row carrying the original started_at.
+                await session.rollback()
+                session.add(
+                    IngestionLog(
+                        source=GW_SOURCE_NAME,
+                        query_params=query_params,
+                        status="failed",
+                        error_message=str(e)[:2000],
+                        objects_ingested=0,
+                        started_at=started_at,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+            except Exception as commit_exc:
+                logger.error(
+                    "Failed to persist IngestionLog failure record: %s", commit_exc
+                )
             return
 
         try:
@@ -173,12 +254,19 @@ async def refresh_gw_events():
                     len(report["retired_unresolved"]),
                     len(report["unretired"]),
                 )
+            # Recorded on the row, but deliberately NOT reflected in `status`.
+            # Seeding is the ingestion this row reports; reconciliation is a
+            # follow-on pass that already succeeded or failed independently,
+            # and letting it flip the status would misreport a good seed as a
+            # failed run.
+            await _record_reconciliation(session, log, report)
         except Exception as e:
             # Seeding already succeeded and was committed; a reconciliation
             # failure must not make the whole refresh look like a no-op.
             logger.error(
                 f"✗ GW retirement reconciliation failed: {e}", exc_info=True
             )
+            await _record_reconciliation(session, log, {"error": str(e)[:500]})
 
 
 async def run_chime_ingestion():
