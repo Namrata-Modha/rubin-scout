@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import CosmicAnimation from "../components/CosmicAnimation";
+import SourceBadge, { getSourceInfo } from "../components/SourceBadge";
 import { getLiveAlertDetail } from "../lib/api";
 import { getClassInfo, getConstellation, formatTimeSince } from "../lib/cosmos";
 
@@ -91,6 +92,380 @@ function Section({ title, children }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+
+// ── ZTF detail body ─────────────────────────────────────────────
+// Split into its own component rather than made conditional field by field:
+// LSST shares almost none of this schema, so one layout would leave most of an
+// LSST page rendering permanent dashes.
+
+function ZtfDetail({ data }) {
+  const coords = data.coords ?? {};
+  const phot = data.photometry ?? {};
+  const scores = data.classification_scores ?? {};
+  const ctx = data.context ?? {};
+  const xm = data.crossmatch ?? {};
+  const host = data.host ?? {};
+  const constellation = getConstellation(coords.ra ?? data.ra, coords.dec ?? data.dec);
+
+  // Classify real/bogus scores into plain words
+  const rbLabel = (rb) => {
+    if (rb == null) return "—";
+    if (rb >= 0.65) return "Real (likely genuine transient)";
+    if (rb >= 0.3) return "Uncertain";
+    return "Bogus (likely artefact)";
+  };
+
+  return (
+    <>
+    {/* Quick facts */}
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <FactCard
+        label="Direction"
+        value={ctx.constellation || constellation}
+        detail={`RA ${(coords.ra ?? data.ra)?.toFixed(4)}°`}
+      />
+      <FactCard
+        label="Declination"
+        value={`${(coords.dec ?? data.dec)?.toFixed(4)}°`}
+        detail="South is negative"
+        mono
+      />
+      <FactCard
+        label="Julian Date"
+        value={coords.jd?.toFixed(3) ?? "—"}
+        detail="Days since Jan 1, 4713 BC"
+        mono
+      />
+      <FactCard
+        label="Active for"
+        value={ctx.lapse != null ? `${ctx.lapse.toFixed(1)} days` : "—"}
+        detail={ctx.firstdate ? `Since ${ctx.firstdate.slice(0, 10)}` : undefined}
+      />
+    </div>
+
+    {/* Photometry */}
+    <Section title="Photometry">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <FactCard
+          label="Magnitude (PSF)"
+          value={phot.magpsf?.toFixed(3) ?? "—"}
+          detail="Brightness — lower = brighter"
+          mono
+        />
+        <FactCard
+          label="Uncertainty (±σ)"
+          value={phot.sigmapsf?.toFixed(4) ?? "—"}
+          detail="Photometric error in magnitudes"
+          mono
+        />
+        <FactCard
+          label="Limiting magnitude"
+          value={phot.diffmaglim?.toFixed(2) ?? "—"}
+          detail="Faintest detectable source this night"
+          mono
+        />
+      </div>
+
+      {/* Real/bogus scores */}
+      <div className="space-y-3 pt-3 border-t border-white/[0.05]">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-white/50">
+              Real/Bogus score
+              <span className="ml-1 text-white/20 cursor-help text-[10px]" title="Trained on real vs artefact detections. ≥0.65 = likely real.">ⓘ</span>
+            </p>
+            <p className="text-[10px] text-white/25 mt-0.5">
+              {phot.rb != null ? rbLabel(phot.rb) : "Not available"}
+            </p>
+          </div>
+          <span className="text-sm font-mono text-white/60">
+            {phot.rb?.toFixed(3) ?? "—"}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-white/50">
+              Deep Learning Real/Bogus
+              <span className="ml-1 text-white/20 cursor-help text-[10px]" title="DeepCNN trained on ZTF images. More accurate than rb for faint sources.">ⓘ</span>
+            </p>
+            <p className="text-[10px] text-white/25 mt-0.5">
+              {phot.drb != null ? rbLabel(phot.drb) : "Not available"}
+            </p>
+          </div>
+          <span className="text-sm font-mono text-white/60">
+            {phot.drb?.toFixed(3) ?? "—"}
+          </span>
+        </div>
+      </div>
+    </Section>
+
+    {/* Classification scores */}
+    <Section title="Fink classifier scores">
+      <p className="text-[11px] text-white/25 mb-4 -mt-2 leading-relaxed">
+        Four independent Fink ML pipelines evaluate every ZTF alert. Each bar shows that
+        pipeline's confidence that this is the named event type. Scores are independent —
+        they don't sum to 1.
+      </p>
+      <div className="space-y-4">
+        {SCORE_DEFS.map((def) => (
+          <ScoreBar
+            key={def.key}
+            label={def.label}
+            hint={def.hint}
+            value={scores[def.key]}
+            color={def.color}
+          />
+        ))}
+      </div>
+    </Section>
+
+    {/* Cross-match */}
+    <Section title="Catalog cross-match">
+      <div className="space-y-2 text-sm">
+        {[
+          {
+            label: "CDS Xmatch",
+            value: xm.cdsxmatch && xm.cdsxmatch !== "Unknown" ? xm.cdsxmatch : null,
+            fallback: "No known catalog match",
+            hint: "Nearest source in the SIMBAD/VizieR catalog within 1.5 arcsec",
+          },
+          {
+            label: "TNS name",
+            value: xm.tns,
+            fallback: "Not reported to TNS",
+            hint: "IAU Transient Name Server — official designation if spectroscopically classified",
+          },
+          {
+            label: "VSX",
+            value: xm.vsx,
+            fallback: "Not in AAVSO VSX",
+            hint: "Variable Star Index — known variable star at this position",
+          },
+          {
+            label: "Mangrove galaxy (2MASS)",
+            value: xm.mangrove_2MASS_name,
+            fallback: "No 2MASS host match",
+            hint: "Nearest galaxy in the Mangrove catalog (2MASS photometry)",
+          },
+          {
+            label: "Mangrove galaxy (HyperLEDA)",
+            value: xm.mangrove_HyperLEDA_name,
+            fallback: null,
+          },
+        ].map(({ label, value, fallback, hint }) => (
+          <div key={label} className="flex items-start justify-between gap-4 py-1.5 border-b border-white/[0.04] last:border-0">
+            <span className="text-white/35 shrink-0" title={hint}>
+              {label}
+              {hint && <span className="ml-1 text-white/15 cursor-help text-[10px]">ⓘ</span>}
+            </span>
+            <span className={`text-right font-mono text-[12px] ${value ? "text-white/70" : "text-white/20"}`}>
+              {value ?? fallback ?? "—"}
+            </span>
+          </div>
+        ))}
+
+        {xm.mangrove_lum_dist != null && (
+          <div className="flex items-start justify-between gap-4 py-1.5">
+            <span className="text-white/35">Luminosity distance</span>
+            <span className="text-right font-mono text-[12px] text-white/70">
+              {parseFloat(xm.mangrove_lum_dist).toFixed(1)} Mpc
+            </span>
+          </div>
+        )}
+      </div>
+    </Section>
+
+    {/* Host context */}
+    <Section title="Host &amp; detection context">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <FactCard
+          label="Star/galaxy score"
+          value={host.classtar?.toFixed(3) ?? "—"}
+          detail="0 = galaxy, 1 = point source (star)"
+          mono
+        />
+        <FactCard
+          label="Nearest source (arcsec)"
+          value={host.distnr?.toFixed(2) ?? "—"}
+          detail={host.magnr != null ? `Ref. mag ${host.magnr.toFixed(2)}` : undefined}
+          mono
+        />
+        <FactCard
+          label="Detection history"
+          value={host.ndethist ?? "—"}
+          detail="Total ZTF detections of this position"
+        />
+        {host.nmtchps != null && (
+          <FactCard
+            label="Nearby sources"
+            value={host.nmtchps}
+            detail="Sources within 30 arcsec in PS1"
+          />
+        )}
+      </div>
+    </Section>
+    </>
+  );
+}
+
+
+// ── Rubin/LSST detail body ────────────────────────────────────
+// Every section is driven by what the backend returned. Sections with no LSST
+// analogue — ZTF's kilonova and SLSN bars, its host-context block — are absent
+// from the payload entirely and so never render as empty dashes.
+
+function LsstDetail({ data }) {
+  const coords = data.coords ?? {};
+  const b = data.brightness ?? {};
+  const quality = data.quality;
+  const scores = data.classifier_scores ?? [];
+  const xm = data.crossmatch ?? [];
+  const constellation = getConstellation(coords.ra ?? data.ra, coords.dec ?? data.dec);
+
+  const fluxCard = (
+    <FactCard
+      label="Difference flux"
+      value={b.flux_njy != null ? `${b.flux_njy.toFixed(1)} nJy` : "—"}
+      detail={b.flux_err_njy != null ? `± ${b.flux_err_njy.toFixed(1)} nJy` : undefined}
+      mono
+    />
+  );
+  const snrCard = (
+    <FactCard
+      label="Signal-to-noise"
+      value={b.snr != null ? `${b.snr.toFixed(1)}σ` : "—"}
+      detail="How far above the noise"
+      mono
+    />
+  );
+
+  return (
+    <>
+      {/* Quick facts */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <FactCard
+          label="Direction"
+          value={constellation}
+          detail={`RA ${(coords.ra ?? data.ra)?.toFixed(4)}°`}
+        />
+        <FactCard
+          label="Declination"
+          value={`${(coords.dec ?? data.dec)?.toFixed(4)}°`}
+          detail="South is negative"
+          mono
+        />
+        <FactCard
+          label="Observed (MJD)"
+          value={coords.mjd?.toFixed(4) ?? "—"}
+          detail={coords.jd ? `JD ${coords.jd.toFixed(3)}` : undefined}
+          mono
+        />
+        <FactCard label="Filter band" value={b.band ?? "—"} detail="Which filter caught it" />
+      </div>
+
+      {/* Brightness — Rubin reports flux, not magnitude */}
+      <Section title="Brightness">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {b.magnitude != null ? (
+            <FactCard
+              label="Magnitude (AB)"
+              value={b.magnitude.toFixed(2)}
+              detail="Brightness — lower = brighter"
+              mono
+            />
+          ) : (
+            <FactCard
+              label="Change vs. reference"
+              value={b.trend === "fading" ? "Fading" : "—"}
+              detail="No magnitude — see below"
+            />
+          )}
+          {fluxCard}
+          {snrCard}
+        </div>
+        {b.explanation && (
+          <p className="text-[11px] text-white/40 mt-3 leading-relaxed">{b.explanation}</p>
+        )}
+        {b.snr_explanation && (
+          <p className="text-[11px] text-white/30 mt-1 leading-relaxed">{b.snr_explanation}</p>
+        )}
+      </Section>
+
+      {/* Detection quality */}
+      {quality && (
+        <Section title="Detection quality">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-white/50">
+              Reliability
+              {quality.reliability_version && (
+                <span className="ml-1 text-white/25 text-[10px]">
+                  v{quality.reliability_version}
+                </span>
+              )}
+            </span>
+            <span className="text-sm font-mono text-white/60">
+              {quality.reliability.toFixed(3)}
+            </span>
+          </div>
+          <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${Math.min(Math.max(quality.reliability * 100, 0), 100)}%`,
+                background: "#ff922b",
+                opacity: 0.75,
+              }}
+            />
+          </div>
+          {quality.hint && (
+            <p className="text-[11px] text-white/30 mt-2 leading-relaxed">{quality.hint}</p>
+          )}
+        </Section>
+      )}
+
+      {/* Classifier scores — only the ones Fink actually ran */}
+      {scores.length > 0 && (
+        <Section title="Fink LSST classifiers">
+          <p className="text-[11px] text-white/25 mb-4 -mt-2 leading-relaxed">
+            Only the classifiers Fink ran on this alert are shown. Rubin has no kilonova or
+            superluminous-supernova model, so those bars are absent rather than empty.
+          </p>
+          <div className="space-y-4">
+            {scores.map((sc) => (
+              <ScoreBar
+                key={sc.key}
+                label={sc.label}
+                hint={sc.hint}
+                value={sc.value}
+                color="#ff922b"
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Catalog cross-match — per-catalog f:xm_* fields */}
+      {xm.length > 0 && (
+        <Section title="Catalog cross-match">
+          <div className="space-y-2 text-sm">
+            {xm.map((m) => (
+              <div
+                key={m.key}
+                className="flex items-start justify-between gap-4 py-1.5 border-b border-white/[0.04] last:border-0"
+              >
+                <span className="text-white/35 shrink-0">{m.label}</span>
+                <span className="text-right font-mono text-[12px] text-white/70">{m.value}</span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+    </>
+  );
+}
+
+
 export default function LiveAlertDetail() {
   const { externalId } = useParams();
   const [data, setData] = useState(null);
@@ -135,22 +510,11 @@ export default function LiveAlertDetail() {
   }
 
   const info = getClassInfo(data.classification);
-  const animKey = FINK_TO_ANIM[data.classification] ?? null;
-  const coords = data.coords ?? {};
-  const phot = data.photometry ?? {};
-  const scores = data.classification_scores ?? {};
-  const ctx = data.context ?? {};
-  const xm = data.crossmatch ?? {};
-  const host = data.host ?? {};
-  const constellation = getConstellation(coords.ra ?? data.ra, coords.dec ?? data.dec);
-
-  // Classify real/bogus scores into plain words
-  const rbLabel = (rb) => {
-    if (rb == null) return "—";
-    if (rb >= 0.65) return "Real (likely genuine transient)";
-    if (rb >= 0.3) return "Uncertain";
-    return "Bogus (likely artefact)";
-  };
+  const isLsst = data.alert_type === "lsst_fink";
+  const source = getSourceInfo(data.alert_type);
+  // CosmicAnimation is keyed on ZTF's class strings; LSST uses tag names, so
+  // it simply does not apply there.
+  const animKey = isLsst ? null : (FINK_TO_ANIM[data.classification] ?? null);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -176,12 +540,18 @@ export default function LiveAlertDetail() {
             <h1 className="text-2xl font-semibold text-white/90 mt-2">{info.name}</h1>
             <p className="text-white/50 mt-1">{info.short}</p>
 
-            {/* ZTF object ID */}
+            {/* Survey object ID — label and portal both follow the survey */}
             {data.object_id && (
               <div className="flex items-center gap-2 mt-3">
-                <span className="text-xs text-white/25">ZTF ID</span>
+                <span className="text-xs text-white/25">
+                  {isLsst ? "Rubin object" : "ZTF ID"}
+                </span>
                 <a
-                  href={`https://fink-portal.org/${data.object_id}`}
+                  href={
+                    isLsst
+                      ? `https://lsst.fink-portal.org/${data.object_id}`
+                      : `https://fink-portal.org/${data.object_id}`
+                  }
                   target="_blank"
                   rel="noopener"
                   className="text-xs font-mono text-cosmos-400 hover:text-cosmos-300 flex items-center gap-1 transition-colors"
@@ -197,6 +567,11 @@ export default function LiveAlertDetail() {
           </div>
 
           <div className="text-right shrink-0">
+            {/* Same badge the list view uses, so a survey reads the same way
+                in both places. */}
+            <div className="mb-3 flex justify-end">
+              <SourceBadge alertType={data.alert_type} size="lg" />
+            </div>
             <p className="text-xs text-white/25">Detected</p>
             <p className="text-sm text-white/60 mt-0.5">
               {data.detected_at ? formatTimeSince(data.detected_at) : "—"}
@@ -220,200 +595,20 @@ export default function LiveAlertDetail() {
       {/* Cosmic animation */}
       {animKey && <CosmicAnimation classification={animKey} />}
 
-      {/* Quick facts */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <FactCard
-          label="Direction"
-          value={ctx.constellation || constellation}
-          detail={`RA ${(coords.ra ?? data.ra)?.toFixed(4)}°`}
-        />
-        <FactCard
-          label="Declination"
-          value={`${(coords.dec ?? data.dec)?.toFixed(4)}°`}
-          detail="South is negative"
-          mono
-        />
-        <FactCard
-          label="Julian Date"
-          value={coords.jd?.toFixed(3) ?? "—"}
-          detail="Days since Jan 1, 4713 BC"
-          mono
-        />
-        <FactCard
-          label="Active for"
-          value={ctx.lapse != null ? `${ctx.lapse.toFixed(1)} days` : "—"}
-          detail={ctx.firstdate ? `Since ${ctx.firstdate.slice(0, 10)}` : undefined}
-        />
-      </div>
-
-      {/* Photometry */}
-      <Section title="Photometry">
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-          <FactCard
-            label="Magnitude (PSF)"
-            value={phot.magpsf?.toFixed(3) ?? "—"}
-            detail="Brightness — lower = brighter"
-            mono
-          />
-          <FactCard
-            label="Uncertainty (±σ)"
-            value={phot.sigmapsf?.toFixed(4) ?? "—"}
-            detail="Photometric error in magnitudes"
-            mono
-          />
-          <FactCard
-            label="Limiting magnitude"
-            value={phot.diffmaglim?.toFixed(2) ?? "—"}
-            detail="Faintest detectable source this night"
-            mono
-          />
-        </div>
-
-        {/* Real/bogus scores */}
-        <div className="space-y-3 pt-3 border-t border-white/[0.05]">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-white/50">
-                Real/Bogus score
-                <span className="ml-1 text-white/20 cursor-help text-[10px]" title="Trained on real vs artefact detections. ≥0.65 = likely real.">ⓘ</span>
-              </p>
-              <p className="text-[10px] text-white/25 mt-0.5">
-                {phot.rb != null ? rbLabel(phot.rb) : "Not available"}
-              </p>
-            </div>
-            <span className="text-sm font-mono text-white/60">
-              {phot.rb?.toFixed(3) ?? "—"}
-            </span>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-white/50">
-                Deep Learning Real/Bogus
-                <span className="ml-1 text-white/20 cursor-help text-[10px]" title="DeepCNN trained on ZTF images. More accurate than rb for faint sources.">ⓘ</span>
-              </p>
-              <p className="text-[10px] text-white/25 mt-0.5">
-                {phot.drb != null ? rbLabel(phot.drb) : "Not available"}
-              </p>
-            </div>
-            <span className="text-sm font-mono text-white/60">
-              {phot.drb?.toFixed(3) ?? "—"}
-            </span>
-          </div>
-        </div>
-      </Section>
-
-      {/* Classification scores */}
-      <Section title="Fink classifier scores">
-        <p className="text-[11px] text-white/25 mb-4 -mt-2 leading-relaxed">
-          Four independent Fink ML pipelines evaluate every ZTF alert. Each bar shows that
-          pipeline's confidence that this is the named event type. Scores are independent —
-          they don't sum to 1.
-        </p>
-        <div className="space-y-4">
-          {SCORE_DEFS.map((def) => (
-            <ScoreBar
-              key={def.key}
-              label={def.label}
-              hint={def.hint}
-              value={scores[def.key]}
-              color={def.color}
-            />
-          ))}
-        </div>
-      </Section>
-
-      {/* Cross-match */}
-      <Section title="Catalog cross-match">
-        <div className="space-y-2 text-sm">
-          {[
-            {
-              label: "CDS Xmatch",
-              value: xm.cdsxmatch && xm.cdsxmatch !== "Unknown" ? xm.cdsxmatch : null,
-              fallback: "No known catalog match",
-              hint: "Nearest source in the SIMBAD/VizieR catalog within 1.5 arcsec",
-            },
-            {
-              label: "TNS name",
-              value: xm.tns,
-              fallback: "Not reported to TNS",
-              hint: "IAU Transient Name Server — official designation if spectroscopically classified",
-            },
-            {
-              label: "VSX",
-              value: xm.vsx,
-              fallback: "Not in AAVSO VSX",
-              hint: "Variable Star Index — known variable star at this position",
-            },
-            {
-              label: "Mangrove galaxy (2MASS)",
-              value: xm.mangrove_2MASS_name,
-              fallback: "No 2MASS host match",
-              hint: "Nearest galaxy in the Mangrove catalog (2MASS photometry)",
-            },
-            {
-              label: "Mangrove galaxy (HyperLEDA)",
-              value: xm.mangrove_HyperLEDA_name,
-              fallback: null,
-            },
-          ].map(({ label, value, fallback, hint }) => (
-            <div key={label} className="flex items-start justify-between gap-4 py-1.5 border-b border-white/[0.04] last:border-0">
-              <span className="text-white/35 shrink-0" title={hint}>
-                {label}
-                {hint && <span className="ml-1 text-white/15 cursor-help text-[10px]">ⓘ</span>}
-              </span>
-              <span className={`text-right font-mono text-[12px] ${value ? "text-white/70" : "text-white/20"}`}>
-                {value ?? fallback ?? "—"}
-              </span>
-            </div>
-          ))}
-
-          {xm.mangrove_lum_dist != null && (
-            <div className="flex items-start justify-between gap-4 py-1.5">
-              <span className="text-white/35">Luminosity distance</span>
-              <span className="text-right font-mono text-[12px] text-white/70">
-                {parseFloat(xm.mangrove_lum_dist).toFixed(1)} Mpc
-              </span>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Host context */}
-      <Section title="Host &amp; detection context">
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <FactCard
-            label="Star/galaxy score"
-            value={host.classtar?.toFixed(3) ?? "—"}
-            detail="0 = galaxy, 1 = point source (star)"
-            mono
-          />
-          <FactCard
-            label="Nearest source (arcsec)"
-            value={host.distnr?.toFixed(2) ?? "—"}
-            detail={host.magnr != null ? `Ref. mag ${host.magnr.toFixed(2)}` : undefined}
-            mono
-          />
-          <FactCard
-            label="Detection history"
-            value={host.ndethist ?? "—"}
-            detail="Total ZTF detections of this position"
-          />
-          {host.nmtchps != null && (
-            <FactCard
-              label="Nearby sources"
-              value={host.nmtchps}
-              detail="Sources within 30 arcsec in PS1"
-            />
-          )}
-        </div>
-      </Section>
+      {isLsst ? (
+        <LsstDetail data={data} />
+      ) : (
+        <ZtfDetail data={data} />
+      )}
 
       {/* Footer */}
       <p className="text-[10px] text-white/20 text-center py-4">
-        Alert data from the Fink broker (Möller et al. 2021, MNRAS 501, 3272) processing the
-        ZTF alert stream. Classifications by SuperNNova and Fink random-forest pipelines.
-        External ID (candid) {externalId}.
+        Alert data from the Fink broker (Möller et al. 2021, MNRAS 501, 3272), processing the{" "}
+        {source.fullName} alert stream.{" "}
+        {isLsst
+          ? "Classifications by Fink's CATS and SuperNNova models."
+          : "Classifications by SuperNNova and Fink random-forest pipelines."}{" "}
+        External ID ({isLsst ? "diaSourceId" : "candid"}) {externalId}.
       </p>
     </div>
   );

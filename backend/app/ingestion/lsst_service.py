@@ -98,7 +98,7 @@ inside FinkIngestionService, because the two are not a drop-in match:
     d:rf_kn_vs_nonkn      -> MISSING (no kilonova-specific score exists)
     d:slsn_score          -> MISSING (no SLSN-specific score exists)
     d:cdsxmatch           -> replaced by a much richer, differently-shaped
-                             set of per-catalog xm:* fields (Gaia DR3, Legacy
+                             set of per-catalog f:xm_* fields (Gaia DR3, Legacy
                              Survey DR8, Mangrove, SIMBAD, SPICY, TNS, VSX,
                              3HSP, 4LAC) — not parsed individually here;
                              preserved in raw_payload.
