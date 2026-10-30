@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -310,4 +311,9 @@ class AlertLive(Base):
     __table_args__ = (
         UniqueConstraint("source_id", "external_id",
                          name="uq_alerts_live_source_external"),
+        # GET /api/alerts/live orders by detected_at DESC. Plain ascending
+        # btree: Postgres scans it backward. Declared here with the same name
+        # as migration d8b2f4a96c13. That the two match was verified once
+        # against a real Postgres, not enforced on every run.
+        Index("ix_alerts_live_detected_at", "detected_at"),
     )
