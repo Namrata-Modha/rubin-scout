@@ -808,3 +808,23 @@ def test_ztf_extraction_output_is_unchanged():
     # LSST-only keys must not leak into a ZTF payload.
     for absent in ("brightness", "quality", "classifier_scores"):
         assert absent not in out
+
+
+# ---------------------------------------------------------------------------
+# Schema: the detected_at index
+#
+# GET /api/alerts/live orders by detected_at DESC. This test pins what the
+# model declares. That the declaration matches migration d8b2f4a96c13 was
+# verified once against a real Postgres, not on every run.
+# ---------------------------------------------------------------------------
+
+def test_alert_live_model_declares_the_detected_at_index():
+    from app.models.models import AlertLive
+
+    by_name = {ix.name: ix for ix in AlertLive.__table__.indexes}
+
+    assert "ix_alerts_live_detected_at" in by_name
+    assert [c.name for c in by_name["ix_alerts_live_detected_at"].columns] == ["detected_at"]
+    # Plain btree and non-unique: a unique index would reject legitimate
+    # alerts that share a detection timestamp.
+    assert by_name["ix_alerts_live_detected_at"].unique is False
