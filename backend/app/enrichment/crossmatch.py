@@ -252,8 +252,10 @@ class EnrichmentService:
             Dict with name, otype, distance_arcsec or None if no match.
 
         Raises:
-            SimbadUnavailable: the host could not be reached, timed out, or
-                returned a service-level error. Never folded into None: with
+            SimbadUnavailable: any failure other than an empty answer -- the
+                host could not be reached, timed out, returned a service-level
+                error, or the client/result could not be handled. Never folded
+                into None: with
                 real connect timeouts a dead host now fails in seconds, and
                 reporting that as "no match" would look like a healthy,
                 empty cycle.
@@ -278,8 +280,11 @@ class EnrichmentService:
             first_line = (str(e).splitlines() or [""])[0][:120]
             raise SimbadUnavailable(f"{type(e).__name__}: {first_line}") from e
         except Exception as e:
-            logger.warning(f"SIMBAD query failed for ({ra}, {dec}) on {host}: {e}")
-            return None
+            # Only a genuinely empty answer (returned above) may mean "no
+            # match". Anything else -- a client that cannot be built, a failed
+            # session mount, an unreadable result -- is a host failure, so it
+            # counts toward the consecutive-failure stop.
+            raise SimbadUnavailable(f"{type(e).__name__}: {e}"[:160]) from e
 
     async def enrich_batch(self, session: AsyncSession, objects: list[Object]):
         """Enrich a batch of objects against SIMBAD.

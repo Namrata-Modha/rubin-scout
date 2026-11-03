@@ -335,7 +335,7 @@ def test_network_level_failures_raise_simbad_unavailable_instead_of_returning_no
             svc._query_simbad_host(CDS, 1.0, 2.0)
 
 
-def test_an_empty_answer_is_none_and_an_unexpected_error_is_none_not_unavailable():
+def test_an_empty_answer_is_none_but_any_other_exception_is_unavailable():
     svc = EnrichmentService()
     client = MagicMock()
     client.query_region.return_value = None
@@ -343,7 +343,44 @@ def test_an_empty_answer_is_none_and_an_unexpected_error_is_none_not_unavailable
         assert svc._query_simbad_host(CDS, 1.0, 2.0) is None
     client.query_region.side_effect = ValueError("bad column")
     with patch("app.enrichment.crossmatch._simbad_client", return_value=client):
-        assert svc._query_simbad_host(CDS, 1.0, 2.0) is None
+        with pytest.raises(xm.SimbadUnavailable, match="ValueError"):
+            svc._query_simbad_host(CDS, 1.0, 2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_adapter_mount_ends_the_step_with_failures_not_a_full_enrichment(caplog):
+    """If the timeout seam breaks (AttributeError on the session mount) every
+    call must count as a host failure -- not read as 'answered, no match'."""
+    xm._simbad_clients.clear()
+
+    def broken_client():
+        client = MagicMock()
+        client._session.mount.side_effect = AttributeError("'Simbad' object has no attribute '_session'")
+        return client
+
+    svc = EnrichmentService()
+    objs = [Object(oid=f"SN{i}", ra=1.0, dec=2.0, classification="SNIa") for i in range(50)]
+    try:
+        with patch("app.enrichment.crossmatch.SimbadClass", side_effect=broken_client),                 patch("app.enrichment.crossmatch.asyncio.sleep", new=AsyncMock()),                 caplog.at_level(logging.INFO):
+            enriched = await svc.enrich_batch(AsyncMock(), objs)
+    finally:
+        xm._simbad_clients.clear()
+
+    assert enriched == 0
+    assert "Enriched 50/50" not in caplog.text
+    assert f"no host answered ({CDS}, {HARVARD})" in caplog.text
+    assert f"failed {xm.SIMBAD_MAX_CONSECUTIVE_TIMEOUTS} times in a row" in caplog.text
+
+
+def test_simbad_tap_service_shares_the_clients_session():
+    """The timeout adapter is mounted on client._session; that only bites if
+    astroquery hands the same session to pyvo's TAPService. A library change
+    that breaks this must fail here, not silently drop the timeout."""
+    from astroquery.simbad import SimbadClass
+
+    client = SimbadClass()
+    client.server = CDS
+    assert client.tap._session is client._session
 
 
 @pytest.mark.asyncio
