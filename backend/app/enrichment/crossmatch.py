@@ -75,7 +75,7 @@ class EnrichmentService:
                 asyncio.to_thread(self._query_simbad, ra, dec, 5.0),
                 timeout=SIMBAD_CALL_TIMEOUT_SECONDS,
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.warning(
                 f"SIMBAD query for {oid} exceeded {SIMBAD_CALL_TIMEOUT_SECONDS:.0f}s; skipping"
             )
