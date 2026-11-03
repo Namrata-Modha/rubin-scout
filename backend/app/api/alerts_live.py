@@ -174,6 +174,37 @@ def _snr_explanation(snr: float | None) -> str | None:
     return "A marginal detection — treat with caution."
 
 
+# Fink writes these in place of a real cross-match value: "Fail" when its own
+# lookup did not resolve, and the string "nan" where a pandas NaN was
+# stringified upstream. Neither is information about the sky.
+_XM_ABSENT = {"", "fail", "nan"}
+
+
+def _format_xm_value(value, key: str, unit: str | None = None) -> str | None:
+    """Display string for one f:xm_* value, or None when it is absent."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in _XM_ABSENT:
+            return None
+    elif isinstance(value, (int, float)):
+        if value != value:  # NaN
+            return None
+        if key.endswith("_dist"):
+            text = f"{value:.1f}"
+        elif float(value).is_integer():
+            text = str(int(value))
+        else:
+            text = f"{value:.6g}"
+    else:
+        return None
+    # HyperLEDA ids arrive as float-formatted strings like "1129384.0".
+    if key == "mangrove_hyperleda" and text.endswith(".0"):
+        text = text[:-2]
+    return f"{text} {unit}" if unit else text
+
+
 def _extract_lsst_fields(p: dict) -> dict:
     """Semantic fields for one Rubin/LSST alert.
 
@@ -236,21 +267,36 @@ def _extract_lsst_fields(p: dict) -> dict:
         scores.append({"key": key, "label": label, "hint": hint, "value": value})
 
     # Cross-match is a set of per-catalog f:xm_* fields, nothing like ZTF's
-    # single d:cdsxmatch string. Only populated ones are returned.
+    # single d:cdsxmatch string. Only populated ones are returned, each
+    # already formatted for display. Key names are the real ones from
+    # production lsst_fink payloads (note f:xm_vsx_Type is capitalised).
+    # f:xm_gaiadr3_VarFlag is deliberately absent: it is the constant "0" on
+    # every row, a default rather than a measurement. So is
+    # f:xm_mangrove_ang_dist: its unit is unconfirmed, and a bare number tells
+    # a reader nothing.
     xm_defs = [
-        ("simbad_otype", "f:xm_simbad_otype", "SIMBAD type"),
-        ("tns_name", "f:xm_tns_fullname", "TNS name"),
-        ("gaia_class", "f:xm_gaia_class", "Gaia DR3"),
-        ("legacy_class", "f:xm_ls_class", "Legacy Survey DR8"),
-        ("vsx_type", "f:xm_vsx_type", "AAVSO VSX"),
+        ("simbad_otype", "f:xm_simbad_otype", "SIMBAD type", None),
+        ("tns_name", "f:xm_tns_fullname", "TNS name", None),
+        ("tns_type", "f:xm_tns_type", "TNS type", None),
+        ("tns_redshift", "f:xm_tns_redshift", "TNS redshift", None),
+        ("gaia_name", "f:xm_gaiadr3_DR3Name", "Gaia DR3 source", None),
+        ("gaia_parallax", "f:xm_gaiadr3_Plx", "Gaia parallax", "mas"),
+        ("legacy_zphot", "f:xm_legacydr8_zphot", "Legacy Survey photo-z", None),
+        ("legacy_pstar", "f:xm_legacydr8_pstar", "Legacy Survey star probability", None),
+        ("vsx_type", "f:xm_vsx_Type", "AAVSO VSX type", None),
+        ("gcvs_type", "f:xm_gcvs_type", "GCVS type", None),
+        ("spicy_class", "f:xm_spicy_class", "SPICY class", None),
+        ("x3hsp_type", "f:xm_x3hsp_type", "3HSP source", None),
+        ("x4lac_type", "f:xm_x4lac_type", "4LAC source", None),
+        ("mangrove_2mass", "f:xm_mangrove_2MASS_name", "Host galaxy (2MASS)", None),
+        ("mangrove_hyperleda", "f:xm_mangrove_HyperLEDA_name", "Host galaxy (HyperLEDA)", None),
+        ("mangrove_lum_dist", "f:xm_mangrove_lum_dist", "Host luminosity distance", "Mpc"),
     ]
     crossmatch = []
-    for key, field, label in xm_defs:
-        value = p.get(field)
-        # "Fail" is Fink's own marker for a cross-match that did not resolve.
-        if value in (None, "", "Fail"):
-            continue
-        crossmatch.append({"key": key, "label": label, "value": value})
+    for key, field, label, unit in xm_defs:
+        value = _format_xm_value(p.get(field), key, unit)
+        if value is not None:
+            crossmatch.append({"key": key, "label": label, "value": value})
 
     fields: dict = {
         "survey": "lsst_fink",

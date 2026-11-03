@@ -746,15 +746,108 @@ def test_cats_score_carries_no_invented_class_label():
     assert json.dumps(out).find("clf_cats_class") == -1
 
 
-def test_failed_and_empty_crossmatches_are_omitted_entirely():
-    """simbad is "Fail" and tns is None here, so the whole section goes away
-    rather than rendering two dashes."""
-    assert "crossmatch" not in _extract_lsst_fields(LSST_ALERT)
+# f:xm_* shapes below mirror real production lsst_fink rows (2,122 sampled
+# 2026-11-02). Most rows look like XM_MOSTLY_ABSENT: SIMBAD and Gaia name are
+# "Fail", the catalog tag columns are "nan" or null, VarFlag is a constant "0".
+XM_MOSTLY_ABSENT = {
+    "f:xm_simbad_otype": "Fail",
+    "f:xm_gaiadr3_DR3Name": "Fail",
+    "f:xm_gaiadr3_Plx": None,
+    "f:xm_gaiadr3_e_Plx": None,
+    "f:xm_gaiadr3_VarFlag": "0",
+    "f:xm_legacydr8_zphot": None,
+    "f:xm_legacydr8_e_zphot": None,
+    "f:xm_legacydr8_fqual": None,
+    "f:xm_legacydr8_pstar": None,
+    "f:xm_tns_fullname": "nan",
+    "f:xm_tns_type": "nan",
+    "f:xm_tns_redshift": None,
+    "f:xm_vsx_Type": "nan",
+    "f:xm_gcvs_type": "nan",
+    "f:xm_spicy_class": None,
+    "f:xm_x3hsp_type": "nan",
+    "f:xm_x4lac_type": None,
+    "f:xm_mangrove_2MASS_name": None,
+    "f:xm_mangrove_HyperLEDA_name": None,
+    "f:xm_mangrove_lum_dist": None,
+    "f:xm_mangrove_ang_dist": None,
+}
+
+# A populated row: TNS match with type/redshift plus a Mangrove host galaxy.
+XM_POPULATED = {
+    **XM_MOSTLY_ABSENT,
+    "f:xm_tns_fullname": "AT 2018dhf",
+    "f:xm_tns_type": "SN Ia",
+    "f:xm_tns_redshift": 0.021558,
+    "f:xm_vsx_Type": "EW",
+    "f:xm_mangrove_2MASS_name": "23003255-1450003",
+    "f:xm_mangrove_HyperLEDA_name": "1129384.0",
+    "f:xm_mangrove_lum_dist": 101.91697,
+    "f:xm_mangrove_ang_dist": 115.322464,
+}
 
 
-def test_present_crossmatches_are_returned():
-    out = _extract_lsst_fields({**LSST_ALERT, "f:xm_tns_fullname": "SN 2026abc"})
-    assert [m["value"] for m in out["crossmatch"]] == ["SN 2026abc"]
+def _xm(payload):
+    return {m["key"]: m for m in _extract_lsst_fields({**LSST_ALERT, **payload}).get("crossmatch", [])}
+
+
+def test_failed_nan_and_empty_crossmatches_are_omitted_entirely():
+    """A mostly-Fail/nan real row must drop the whole section, not render
+    dashes -- and the constant VarFlag "0" must not count as a match."""
+    assert "crossmatch" not in _extract_lsst_fields({**LSST_ALERT, **XM_MOSTLY_ABSENT})
+
+
+def test_none_empty_string_fail_and_nan_are_all_absent():
+    for sentinel in (None, "", "Fail", "nan", "  nan ", float("nan")):
+        assert _xm({"f:xm_tns_fullname": sentinel}) == {}, sentinel
+
+
+def test_populated_crossmatches_use_the_real_key_names():
+    xm = _xm(XM_POPULATED)
+    assert xm["tns_name"]["value"] == "AT 2018dhf"
+    assert xm["tns_type"]["value"] == "SN Ia"
+    assert xm["tns_redshift"]["value"] == "0.021558"
+    assert xm["vsx_type"]["value"] == "EW"   # f:xm_vsx_Type, capital T
+    assert xm["mangrove_2mass"]["value"] == "23003255-1450003"
+    assert xm["mangrove_lum_dist"]["value"] == "101.9 Mpc"
+    # Unit unconfirmed, so the angular distance is never displayed.
+    assert "mangrove_ang_dist" not in xm
+    assert "f:xm_mangrove_ang_dist" not in json.dumps(
+        _extract_lsst_fields({**LSST_ALERT, **XM_POPULATED})
+    )
+
+
+def test_hyperleda_float_string_is_shown_as_an_integer():
+    assert _xm(XM_POPULATED)["mangrove_hyperleda"]["value"] == "1129384"
+    assert _xm({"f:xm_mangrove_HyperLEDA_name": "194914"})["mangrove_hyperleda"]["value"] == "194914"
+
+
+def test_varflag_is_never_reported():
+    out = json.dumps(_extract_lsst_fields({**LSST_ALERT, **XM_POPULATED}))
+    assert "VarFlag" not in out
+
+
+def test_old_wrong_keys_are_not_read():
+    """f:xm_gaia_class / f:xm_ls_class / f:xm_vsx_type do not exist in real
+    payloads; a stale key must not produce a field."""
+    assert _xm({"f:xm_gaia_class": "STAR", "f:xm_ls_class": "PSF", "f:xm_vsx_type": "EW"}) == {}
+
+
+def test_simbad_gaia_and_legacy_appear_when_their_data_does():
+    """They are Fail/null on every row today (an upstream lookup problem), but
+    must render as soon as real values arrive."""
+    xm = _xm({
+        "f:xm_simbad_otype": "EclBin",
+        "f:xm_gaiadr3_DR3Name": "Gaia DR3 123",
+        "f:xm_gaiadr3_Plx": 1.25,
+        "f:xm_legacydr8_zphot": 0.31,
+        "f:xm_legacydr8_pstar": 0.02,
+    })
+    assert xm["simbad_otype"]["value"] == "EclBin"
+    assert xm["gaia_name"]["value"] == "Gaia DR3 123"
+    assert xm["gaia_parallax"]["value"] == "1.25 mas"
+    assert xm["legacy_zphot"]["value"] == "0.31"
+    assert xm["legacy_pstar"]["value"] == "0.02"
 
 
 def test_missing_reliability_omits_the_quality_section():

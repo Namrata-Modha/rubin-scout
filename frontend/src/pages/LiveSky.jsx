@@ -18,16 +18,15 @@ const SURVEY_FILTERS = [
 // Survey-aware empty-state copy. A genuinely empty Rubin/LSST result reads
 // as ambiguous/broken without context. Ingestion IS scheduled (every 15
 // minutes, see LSST_INGESTION_INTERVAL_SECONDS in scheduler.py) and is
-// running fine — the upstream observatory is what's quiet: Rubin's summit
-// was evacuated 2026-07-14 for a record storm and Fink has recorded no LSST
-// night since (docs/lsst-ingestion-recovery.md; re-confirmed 2026-08-27).
-// So "zero alerts" is an expected upstream state, not a triggering problem.
+// running fine — alerts only exist while Rubin is observing, so "zero alerts"
+// is an expected upstream state, not a triggering problem. Rubin is delivering
+// alerts again after the July 2026 storm outage (docs/lsst-ingestion-recovery.md).
 function emptyStateCopy(selectedSurvey) {
   if (selectedSurvey === "lsst_fink") {
     return {
       title: "No Rubin/LSST alerts found.",
       detail:
-        "Nothing's broken — Rubin/LSST ingestion runs automatically every 15 minutes, but Rubin Observatory's summit has been offline since the July 2026 storm, so there's genuinely nothing new to ingest yet. Switch to \"All surveys\" to see ZTF alerts in the meantime.",
+        "Nothing's broken — Rubin/LSST ingestion runs automatically every 15 minutes, and alerts appear whenever Rubin is observing, so there's nothing new to show right now. Switch to \"All surveys\" to see ZTF alerts in the meantime.",
     };
   }
   if (selectedSurvey === "ztf_fink") {
@@ -245,8 +244,8 @@ export default function LiveSky() {
           <h1 className="text-2xl font-semibold tracking-tight">Live Alert Stream</h1>
           <p className="text-sm text-white/40 mt-1">
             Real-time transient alerts from Fink's ZTF and Rubin/LSST alert streams. ZTF updates
-            daily at 10:00 UTC; Rubin/LSST is ingested every 15 minutes, though the observatory
-            has been offline since the July 2026 storm.
+            daily at 10:00 UTC; Rubin/LSST alerts are ingested every 15 minutes and appear
+            whenever Rubin is observing.
           </p>
         </div>
         <button
