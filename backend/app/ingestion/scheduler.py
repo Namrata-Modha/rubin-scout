@@ -67,6 +67,17 @@ assert LSST_INGESTION_INTERVAL_SECONDS < MAX_WINDOW_SPAN.total_seconds(), (
     "MAX_WINDOW_SPAN in lsst_service.py to stay larger too."
 )
 
+# The shared TNS + ALeRCE + SIMBAD cycle must never overlap itself. If a run
+# overruns its interval, APScheduler drops the triggers it missed (it would
+# otherwise queue them) and fires once at the next slot: max_instances=1 stops
+# a second copy starting, coalesce collapses any backlog into one run, and
+# misfire_grace_time lets a run that was only briefly delayed still happen.
+CYCLE_JOB_OPTIONS = {
+    "max_instances": 1,
+    "coalesce": True,
+    "misfire_grace_time": 300,
+}
+
 # Global scheduler instance
 _scheduler = None
 
@@ -343,6 +354,7 @@ def start_background_scheduler():
         id="ingestion_cycle",
         name="TNS + ALeRCE Ingestion",
         replace_existing=True,
+        **CYCLE_JOB_OPTIONS,
     )
 
     # Fink/ZTF live alerts — daily at 10:00 UTC (after ZTF night closes)
@@ -461,6 +473,7 @@ def main():
         next_run_time=datetime.now(timezone.utc),
         id="ingestion_cycle",
         name="TNS + ALeRCE Ingestion",
+        **CYCLE_JOB_OPTIONS,
     )
 
     logger.info(f"Standalone scheduler starting (interval: {settings.ingestion_interval_seconds}s)")
