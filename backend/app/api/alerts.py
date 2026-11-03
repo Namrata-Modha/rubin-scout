@@ -449,10 +449,13 @@ def _build_recommendation(
     if simbad and simbad.get("type") in _KNOWN_STABLE_TYPES:
         pre_only = all(r["pre_existing"] and not r["new_activity"] for r in ztf_history) if ztf_history else True
         if pre_only:
+            dist = simbad.get("distance_arcsec")
+            # The separation is None when SIMBAD returned no usable position.
+            separation = f", separation: {dist:.1f}\"" if dist is not None else ""
             return (
                 "LIKELY_KNOWN",
                 f"SIMBAD identifies this position as {simbad['name']} "
-                f"(type: {simbad['type']}, separation: {simbad['distance_arcsec']:.1f}\"). "
+                f"(type: {simbad['type']}{separation}). "
                 "All ZTF detections pre-date the query epoch — this is likely a catalogued source, not a new transient.",
             )
 
