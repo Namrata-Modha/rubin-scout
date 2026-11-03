@@ -10,10 +10,10 @@ ALeRCE: Enrichment layer (light curves, ML classifications)
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from app.config import get_settings
 from app.database import async_session
@@ -48,6 +48,15 @@ gw_service = GWCrossMatchService()
 # would have been the odd one out, describing the schedule instead of where
 # the rows come from.
 GW_SOURCE_NAME = "gwosc_catalog"
+
+# The weekly refresh fires Fridays 23:20 UTC. A restart used to reset an
+# interval trigger, so frequent deploys meant it might never run; a cron slot
+# does not move. On startup the refresh only runs if the last completed one is
+# older than this (a week plus a day of slack), as a catch-up after downtime.
+GW_REFRESH_STALE_AFTER = timedelta(days=8)
+# A missed Friday slot (process down at 23:20) still runs if the process is
+# back within this window; coalesce folds any backlog into a single run.
+GW_REFRESH_MISFIRE_GRACE_SECONDS = 24 * 3600
 
 # 15 minutes -- confirmed against real Fink LSST data (see
 # docs/lsst-ingestion-recovery.md): the worst known 15-minute burst carried
@@ -211,6 +220,11 @@ async def refresh_gw_events():
         )
         session.add(log)
         await session.flush()
+        # Committed now, not at the end: an uncommitted row is invisible to
+        # every other connection, so a refresh that stalls mid-fetch would
+        # leave no trace at all -- indistinguishable from "never ran".
+        await session.commit()
+        log_id = log.id
 
         try:
             payload = await _fetch_gwosc_payload()
@@ -227,18 +241,18 @@ async def refresh_gw_events():
             try:
                 # Roll back first: whatever raised may have left the
                 # transaction aborted, and every further statement -- the
-                # commit included -- would fail with it. The rollback also
-                # discards the uncommitted "running" row, so the failure has
-                # to be a NEW row carrying the original started_at.
+                # commit included -- would fail with it. The "running" row was
+                # committed at the start, so it survives the rollback and is
+                # updated in place. An UPDATE by id, because the rollback
+                # expired `log` and reading it back would need I/O.
                 await session.rollback()
-                session.add(
-                    IngestionLog(
-                        source=GW_SOURCE_NAME,
-                        query_params=query_params,
+                await session.execute(
+                    update(IngestionLog)
+                    .where(IngestionLog.id == log_id)
+                    .values(
                         status="failed",
                         error_message=str(e)[:2000],
                         objects_ingested=0,
-                        started_at=started_at,
                         completed_at=datetime.now(timezone.utc),
                     )
                 )
@@ -278,6 +292,37 @@ async def refresh_gw_events():
                 f"✗ GW retirement reconciliation failed: {e}", exc_info=True
             )
             await _record_reconciliation(session, log, {"error": str(e)[:500]})
+
+
+async def gw_refresh_is_due(session) -> bool:
+    """True if no completed GWOSC refresh exists within GW_REFRESH_STALE_AFTER.
+
+    Only ``completed`` rows count: a failed or stuck "running" row is not a
+    refresh, and a restart should retry rather than wait out the window.
+    """
+    result = await session.execute(
+        select(func.max(IngestionLog.started_at)).where(
+            IngestionLog.source == GW_SOURCE_NAME,
+            IngestionLog.status == "completed",
+        )
+    )
+    last = result.scalar()
+    return last is None or datetime.now(timezone.utc) - last > GW_REFRESH_STALE_AFTER
+
+
+async def refresh_gw_events_if_stale():
+    """Startup catch-up for the weekly refresh: run it only if it is overdue."""
+    try:
+        async with async_session() as session:
+            due = await gw_refresh_is_due(session)
+    except Exception as e:
+        # Unknown state: refreshing is cheap and idempotent, so err toward it.
+        logger.warning(f"Could not check last GW refresh ({e}); refreshing anyway")
+        due = True
+    if not due:
+        logger.info("GW refresh not due on startup; the weekly slot will handle it")
+        return
+    await refresh_gw_events()
 
 
 async def run_chime_ingestion():
@@ -397,14 +442,28 @@ def start_background_scheduler():
         replace_existing=True,
     )
 
-    # Re-seed GW events from GWOSC weekly to pick up new catalog releases
+    # Re-seed GW events from GWOSC weekly to pick up new catalog releases.
+    # A cron slot, not an interval: an interval is measured from process
+    # start, so every restart pushed the next run a full week out.
     _scheduler.add_job(
         refresh_gw_events,
-        "interval",
-        weeks=1,
-        next_run_time=datetime.now(timezone.utc),  # Run once on startup too
+        "cron",
+        day_of_week="fri",
+        hour=23,
+        minute=20,
+        timezone="UTC",
         id="gw_refresh",
         name="GWOSC GW Event Refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=GW_REFRESH_MISFIRE_GRACE_SECONDS,
+    )
+    # One-shot on startup (no trigger = run now): catch up only if overdue.
+    _scheduler.add_job(
+        refresh_gw_events_if_stale,
+        id="gw_refresh_startup",
+        name="GWOSC GW Event Refresh (startup catch-up)",
         replace_existing=True,
     )
 
@@ -434,7 +493,7 @@ def start_background_scheduler():
         f"{LSST_INGESTION_INTERVAL_SECONDS / 60:.1f} min)"
     )
     logger.info("  - CHIME/FRB catalog ingestion (monthly, 1st 03:00 UTC)")
-    logger.info("  - GWOSC GW event refresh (weekly)")
+    logger.info("  - GWOSC GW event refresh (Fridays 23:20 UTC; startup catch-up if >8 days stale)")
     logger.info("  - Database keep-alive ping (every 4 min)")
     logger.info("=" * 60)
 

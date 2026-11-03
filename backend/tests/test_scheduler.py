@@ -146,14 +146,14 @@ async def test_gw_refresh_writes_a_completed_row_with_the_count():
 
 
 @pytest.mark.asyncio
-async def test_gw_refresh_writes_a_failed_row_with_the_error():
+async def test_gw_refresh_marks_the_committed_running_row_failed():
     """seed_gw_events raising must leave a failed row, not silence.
 
-    A fresh row is expected rather than an edit of the "running" one: the
-    handler rolls back first (the raise may have aborted the transaction),
-    which discards the uncommitted original.
+    The "running" row is committed at the start, so the failure is an UPDATE of
+    that same row (after a rollback), not a replacement row.
     """
     cm, session, added = _session_capturing_logs()
+    session.execute = AsyncMock()
 
     with patch.object(sched, "async_session", MagicMock(return_value=cm)), \
          patch.object(sched, "_fetch_gwosc_payload", new=AsyncMock(return_value={})), \
@@ -161,16 +161,34 @@ async def test_gw_refresh_writes_a_failed_row_with_the_error():
                       new=AsyncMock(side_effect=RuntimeError("GWOSC unreachable"))):
         await sched.refresh_gw_events()
 
-    session.rollback.assert_awaited()       # before writing the failure record
-    logs = _gw_logs(added)
-    assert len(logs) == 2                   # "running", then the replacement
-    failure = logs[-1]
-    assert failure.source == sched.GW_SOURCE_NAME
-    assert failure.status == "failed"
-    assert "GWOSC unreachable" in failure.error_message
-    assert failure.objects_ingested == 0
-    assert failure.started_at == logs[0].started_at   # true duration preserved
-    assert failure.completed_at is not None
+    session.rollback.assert_awaited()
+    assert len(_gw_logs(added)) == 1        # one row only: updated, not replaced
+    stmt = session.execute.await_args.args[0]
+    params = stmt.compile().params
+    assert params["status"] == "failed"
+    assert "GWOSC unreachable" in params["error_message"]
+    assert params["objects_ingested"] == 0
+    assert params["completed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_gw_running_row_is_committed_before_the_fetch_starts():
+    """A stall mid-fetch must be visible from another connection."""
+    cm, session, _added = _session_capturing_logs()
+    order = []
+    session.commit = AsyncMock(side_effect=lambda: order.append("commit"))
+
+    async def fetch():
+        order.append("fetch")
+        return {}
+
+    with patch.object(sched, "async_session", MagicMock(return_value=cm)), \
+         patch.object(sched, "_fetch_gwosc_payload", new=fetch), \
+         patch.object(sched.gw_service, "seed_gw_events",
+                      new=AsyncMock(side_effect=RuntimeError("stop"))):
+        await sched.refresh_gw_events()
+
+    assert order[:2] == ["commit", "fetch"]
 
 
 @pytest.mark.asyncio
@@ -238,3 +256,85 @@ def test_cycle_job_is_single_instance_coalesced_with_a_misfire_grace():
         assert job.misfire_grace_time >= 60
     finally:
         sched._scheduler = None
+
+
+# --------------------------------------------------------------------------- #
+# GW refresh schedule: cron slot + startup catch-up only when overdue
+# --------------------------------------------------------------------------- #
+
+def _scheduler_jobs():
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    sched._scheduler = None
+    try:
+        with patch.object(AsyncIOScheduler, "start"):
+            scheduler = sched.start_background_scheduler()
+        return {j.id: j for j in scheduler.get_jobs()}
+    finally:
+        sched._scheduler = None
+
+
+def test_gw_refresh_is_a_friday_2320_utc_cron_that_survives_restarts():
+    job = _scheduler_jobs()["gw_refresh"]
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["day_of_week"] == "fri"
+    assert fields["hour"] == "23" and fields["minute"] == "20"
+    assert str(job.trigger.timezone) == "UTC"
+    assert job.max_instances == 1
+    assert job.coalesce is True
+    assert job.misfire_grace_time >= 3600
+
+
+def test_gw_refresh_does_not_run_unconditionally_at_startup():
+    jobs = _scheduler_jobs()
+    assert jobs["gw_refresh_startup"].func is sched.refresh_gw_events_if_stale
+
+
+def _result(value):
+    r = MagicMock()
+    r.scalar.return_value = value
+    return r
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "age_days,due",
+    [(None, True), (3, False), (7.9, False), (8.1, True), (30, True)],
+)
+async def test_gw_refresh_is_due_only_when_the_last_completed_run_is_over_8_days_old(age_days, due):
+    from datetime import datetime, timedelta, timezone
+
+    last = None if age_days is None else datetime.now(timezone.utc) - timedelta(days=age_days)
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_result(last))
+    assert await sched.gw_refresh_is_due(session) is due
+
+
+@pytest.mark.asyncio
+async def test_gw_staleness_query_counts_only_completed_rows():
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_result(None))
+    await sched.gw_refresh_is_due(session)
+    sql = str(session.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "gwosc_catalog" in sql and "'completed'" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_due,runs", [(True, 1), (False, 0)])
+async def test_startup_catch_up_refreshes_only_when_due(is_due, runs):
+    cm, _session, _added = _session_capturing_logs()
+    with patch.object(sched, "async_session", MagicMock(return_value=cm)), \
+         patch.object(sched, "gw_refresh_is_due", new=AsyncMock(return_value=is_due)), \
+         patch.object(sched, "refresh_gw_events", new=AsyncMock()) as refresh:
+        await sched.refresh_gw_events_if_stale()
+    assert refresh.await_count == runs
+
+
+@pytest.mark.asyncio
+async def test_startup_catch_up_refreshes_when_the_staleness_check_itself_fails():
+    cm, _session, _added = _session_capturing_logs()
+    with patch.object(sched, "async_session", MagicMock(return_value=cm)), \
+         patch.object(sched, "gw_refresh_is_due", new=AsyncMock(side_effect=RuntimeError("db"))), \
+         patch.object(sched, "refresh_gw_events", new=AsyncMock()) as refresh:
+        await sched.refresh_gw_events_if_stale()
+    refresh.assert_awaited_once()
