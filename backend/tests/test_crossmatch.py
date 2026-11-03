@@ -397,3 +397,68 @@ def test_socket_timeouts_are_short_enough_to_release_the_shared_lock_quickly():
     connect timeout bounds how long a dead host can keep every host waiting."""
     assert xm.SIMBAD_CONNECT_TIMEOUT_SECONDS <= 10
     assert xm.SIMBAD_CONNECT_TIMEOUT_SECONDS + xm.SIMBAD_READ_TIMEOUT_SECONDS <= xm.SIMBAD_CALL_TIMEOUT_SECONDS
+
+
+# --- match selection: the nearest row wins and its real separation is stored ---
+
+from astropy.table import Table  # noqa: E402
+
+
+def _cone_result(rows):
+    """A TAP-shaped SIMBAD result: (main_id, ra_deg, dec_deg, otype) rows."""
+    return Table(
+        rows=rows or None,
+        names=("main_id", "ra", "dec", "otype"),
+        dtype=("U30", "f8", "f8", "U8"),
+    )
+
+
+def _query_with(result, ra=10.0, dec=20.0):
+    svc = EnrichmentService()
+    client = MagicMock()
+    client.query_region.return_value = result
+    with patch("app.enrichment.crossmatch._simbad_client", return_value=client):
+        return svc._query_simbad_host(CDS, ra, dec)
+
+
+def test_the_nearer_row_is_chosen_even_when_the_farther_one_comes_first():
+    far = ("FAR", 10.0, 20.0 + 3.0 / 3600, "X")      # 3 arcsec north
+    near = ("NEAR", 10.0, 20.0 + 1.0 / 3600, "Star")  # 1 arcsec north
+    out = _query_with(_cone_result([far, near]))
+    assert out["name"] == "NEAR"
+    assert out["otype"] == "Star"
+    assert out["distance_arcsec"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_an_offset_source_gets_a_real_separation_above_zero():
+    out = _query_with(_cone_result([("OFF", 10.0, 20.0 + 2.5 / 3600, "Gl")]))
+    assert out["distance_arcsec"] > 0.0
+    assert out["distance_arcsec"] == pytest.approx(2.5, abs=1e-3)
+
+
+def test_ra_offset_is_scaled_by_cos_dec():
+    # 2 arcsec of RA at dec 60 is only ~1 arcsec on the sky.
+    out = _query_with(_cone_result([("E", 10.0 + 2.0 / 3600, 60.0, "Star")]), dec=60.0)
+    assert out["distance_arcsec"] == pytest.approx(1.0, abs=1e-2)
+
+
+def test_sexagesimal_positions_from_the_legacy_votable_are_understood():
+    result = Table(
+        rows=[("A", "00 40 00.0", "+20 00 03.0", "Star")],
+        names=("MAIN_ID", "RA", "DEC", "OTYPE"),
+        dtype=("U10", "U16", "U16", "U8"),
+    )
+    out = _query_with(result, ra=10.0, dec=20.0)   # 00h40m = 10 deg
+    assert out["distance_arcsec"] == pytest.approx(3.0, abs=1e-2)
+
+
+def test_rows_without_a_usable_position_report_an_unknown_separation_not_zero():
+    result = Table(rows=[("A", "Star")], names=("main_id", "otype"), dtype=("U10", "U8"))
+    out = _query_with(result)
+    assert out["name"] == "A"
+    assert out["distance_arcsec"] is None
+
+
+def test_no_rows_still_returns_none():
+    assert _query_with(_cone_result([])) is None
+    assert _query_with(None) is None

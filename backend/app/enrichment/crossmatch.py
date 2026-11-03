@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 import astropy.units as u
+import numpy as np
 import requests
 from astropy.coordinates import SkyCoord
 from astroquery.simbad import SimbadClass
@@ -110,6 +111,43 @@ def _simbad_client(host: str) -> SimbadClass:
                 pass  # Newer astroquery versions include these by default
             _simbad_clients[host] = client
         return client
+
+
+def _nearest_row(result, coord: SkyCoord):
+    """The row of a SIMBAD cone result nearest to ``coord``, and its separation.
+
+    SIMBAD returns every object inside the cone in no particular order, and the
+    TAP result carries no distance column, so the separation is computed here
+    from each row's own position. Returns ``(row, separation_arcsec)``; when no
+    row has a usable position the first row is returned with a separation of
+    None -- unknown, rather than a made-up 0.0.
+    """
+    # Column names and units vary by astroquery version: ra/dec in degrees
+    # (TAP) or RA/DEC as sexagesimal strings (the legacy votable).
+    ra_col = 'ra' if 'ra' in result.colnames else 'RA'
+    dec_col = 'dec' if 'dec' in result.colnames else 'DEC'
+    if ra_col in result.colnames and dec_col in result.colnames:
+        try:
+            ras, decs = result[ra_col], result[dec_col]
+            if ras.dtype.kind in 'US' or ras.dtype == object:
+                positions = SkyCoord(
+                    [str(v) for v in ras], [str(v) for v in decs],
+                    unit=(u.hourangle, u.deg), frame="icrs",
+                )
+            else:
+                positions = SkyCoord(
+                    np.ma.filled(ras.astype(float), np.nan),
+                    np.ma.filled(decs.astype(float), np.nan),
+                    unit=(u.deg, u.deg), frame="icrs",
+                )
+            separations = coord.separation(positions).arcsec
+            usable = np.isfinite(separations)
+            if usable.any():
+                best = int(np.argmin(np.where(usable, separations, np.inf)))
+                return result[best], float(separations[best])
+        except (ValueError, TypeError, u.UnitsError):
+            pass
+    return result[0], None
 
 
 class EnrichmentService:
@@ -227,19 +265,13 @@ class EnrichmentService:
             if result is None or len(result) == 0:
                 return None
 
-            # Take the closest match
-            # Column names vary by astroquery version (MAIN_ID vs main_id)
+            row, separation = _nearest_row(result, coord)
             id_col = 'main_id' if 'main_id' in result.colnames else 'MAIN_ID'
             type_col = 'otype' if 'otype' in result.colnames else 'OTYPE'
-            dist_col = next(
-                (c for c in result.colnames if 'dist' in c.lower() or 'DISTANCE' in c),
-                None
-            )
-            row = result[0]
             return {
                 "name": str(row[id_col]),
                 "otype": str(row[type_col]) if type_col in result.colnames else "unknown",
-                "distance_arcsec": float(row[dist_col]) if dist_col else 0.0,
+                "distance_arcsec": separation,
             }
 
         except (requests.RequestException, DALServiceError, TimeoutError, OSError) as e:
