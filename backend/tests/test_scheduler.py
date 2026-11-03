@@ -218,3 +218,23 @@ async def test_reconciliation_summary_is_recorded_on_the_row():
 def test_gw_source_name_follows_the_column_convention():
     """Every other IngestionLog.source names the data source, not the job."""
     assert sched.GW_SOURCE_NAME == "gwosc_catalog"
+
+
+# --------------------------------------------------------------------------- #
+# The shared cycle job must never overlap itself
+# --------------------------------------------------------------------------- #
+
+def test_cycle_job_is_single_instance_coalesced_with_a_misfire_grace():
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    sched._scheduler = None
+    try:
+        with patch.object(AsyncIOScheduler, "start"):
+            scheduler = sched.start_background_scheduler()
+        job = scheduler.get_job("ingestion_cycle")
+        assert job.max_instances == 1
+        assert job.coalesce is True
+        assert job.misfire_grace_time == sched.CYCLE_JOB_OPTIONS["misfire_grace_time"]
+        assert job.misfire_grace_time >= 60
+    finally:
+        sched._scheduler = None
