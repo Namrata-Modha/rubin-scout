@@ -810,7 +810,11 @@ def test_populated_crossmatches_use_the_real_key_names():
     assert xm["vsx_type"]["value"] == "EW"   # f:xm_vsx_Type, capital T
     assert xm["mangrove_2mass"]["value"] == "23003255-1450003"
     assert xm["mangrove_lum_dist"]["value"] == "101.9 Mpc"
-    assert xm["mangrove_ang_dist"]["value"] == "115.3"
+    # Unit unconfirmed, so the angular distance is never displayed.
+    assert "mangrove_ang_dist" not in xm
+    assert "f:xm_mangrove_ang_dist" not in json.dumps(
+        _extract_lsst_fields({**LSST_ALERT, **XM_POPULATED})
+    )
 
 
 def test_hyperleda_float_string_is_shown_as_an_integer():

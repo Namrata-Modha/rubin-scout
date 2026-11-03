@@ -271,7 +271,9 @@ def _extract_lsst_fields(p: dict) -> dict:
     # already formatted for display. Key names are the real ones from
     # production lsst_fink payloads (note f:xm_vsx_Type is capitalised).
     # f:xm_gaiadr3_VarFlag is deliberately absent: it is the constant "0" on
-    # every row, a default rather than a measurement.
+    # every row, a default rather than a measurement. So is
+    # f:xm_mangrove_ang_dist: its unit is unconfirmed, and a bare number tells
+    # a reader nothing.
     xm_defs = [
         ("simbad_otype", "f:xm_simbad_otype", "SIMBAD type", None),
         ("tns_name", "f:xm_tns_fullname", "TNS name", None),
@@ -289,7 +291,6 @@ def _extract_lsst_fields(p: dict) -> dict:
         ("mangrove_2mass", "f:xm_mangrove_2MASS_name", "Host galaxy (2MASS)", None),
         ("mangrove_hyperleda", "f:xm_mangrove_HyperLEDA_name", "Host galaxy (HyperLEDA)", None),
         ("mangrove_lum_dist", "f:xm_mangrove_lum_dist", "Host luminosity distance", "Mpc"),
-        ("mangrove_ang_dist", "f:xm_mangrove_ang_dist", "Host angular distance", None),
     ]
     crossmatch = []
     for key, field, label, unit in xm_defs:
