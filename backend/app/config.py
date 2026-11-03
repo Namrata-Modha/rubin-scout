@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     ingestion_lookback_days: int = 30
     min_classification_probability: float = 0.5
 
+    # SIMBAD TAP host for the cross-match step. astroquery knows two mirrors,
+    # simbad.cds.unistra.fr and simbad.harvard.edu; whichever is NOT chosen
+    # here is the fallback when the chosen one stops answering.
+    simbad_server: str = "simbad.cds.unistra.fr"
+
     # Notifications
     slack_webhook_url: str = ""
     smtp_host: str = ""
