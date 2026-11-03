@@ -100,3 +100,15 @@ def test_mjd_to_datetime_gw170817():
     dt = _mjd_to_datetime(57982.5)
     assert dt.year == 2017
     assert dt.month == 8
+
+
+def test_likely_known_with_unknown_separation_does_not_crash():
+    """A SIMBAD match with no computable separation (None) still explains itself."""
+    code, reason = _build_recommendation(
+        ztf_history=[{"pre_existing": True, "new_activity": False, "classification": "QSO"}],
+        simbad={"name": "SDSS J123", "type": "QSO", "distance_arcsec": None},
+        gw_coincidence=[],
+        visibility={"observable": True},
+    )
+    assert code == "LIKELY_KNOWN"
+    assert "SDSS J123" in reason and "separation" not in reason
