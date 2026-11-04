@@ -143,7 +143,7 @@ For poorly localized events (no centroid available), falls back to time-window-o
 
 **Current limitation:** no skymaps are ingested yet, so no GW event carries a sky position or credible area. Until they are (see `docs/gw-skymaps.md`), the "Search for optical counterparts" button, `POST /api/gw/events/{id}/crossmatch`, returns HTTP 422 for every GW event.
 
-**Refresh schedule:** the GW catalog is refreshed from GWOSC by a weekly cron job, Fridays at 23:20 UTC. On startup a catch-up refresh runs only if the last completed refresh is more than 8 days old. All scheduled jobs have explicit misfire grace times, so a run delayed by a restart or a busy event loop still happens instead of being skipped.
+**Refresh schedule:** the GW catalog is refreshed from GWOSC by a weekly cron job, Fridays at 23:20 UTC. On startup a catch-up refresh runs only if the last completed refresh is more than 8 days old. The scheduled jobs, except the 4-minute keep-alive, have explicit misfire grace times, so a run that fires late because the scheduler woke late or the event loop was busy still happens. Jobs are held in memory, so a slot that passes while the process is down is not replayed; the GW catch-up checks the last completed run on startup instead.
 
 ## Cosmos Translation Layer
 
