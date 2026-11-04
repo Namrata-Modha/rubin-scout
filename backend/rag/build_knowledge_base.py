@@ -63,6 +63,40 @@ def _load_markdown_docs() -> list[Document]:
     return docs
 
 
+def rebuild(chunks, embeddings, connection: str, store_cls=PGVector) -> None:
+    """Embed every chunk exactly once, then replace the collection.
+
+    The embeddings are computed first and handed to ``from_embeddings`` so the
+    library does not embed a second time. If any embedding fails, this raises
+    before the old collection is touched.
+
+    Note the remaining window: PGVector deletes the old collection, creates
+    the new one and inserts the rows in three separate commits, so a database
+    error during the insert would leave the collection empty until the build is
+    re-run (it is safe to re-run; it always rebuilds from scratch).
+    """
+    texts = [c.page_content for c in chunks]
+    print(f"Embedding {len(texts)} chunks once each (paced to the API rate limit)...")
+    vectors = embeddings.embed_documents(texts)
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"embedding returned {len(vectors)} vectors for {len(texts)} chunks; "
+            "refusing to touch the existing collection"
+        )
+    print(f"All {len(vectors)} embeddings generated, replacing the collection...")
+
+    print(f"Upserting into PGVector collection '{COLLECTION_NAME}'...")
+    store_cls.from_embeddings(
+        text_embeddings=list(zip(texts, vectors)),
+        embedding=embeddings,
+        metadatas=[c.metadata for c in chunks],
+        collection_name=COLLECTION_NAME,
+        connection=connection,
+        use_jsonb=True,
+        pre_delete_collection=True,  # rebuild from scratch on each run
+    )
+
+
 def main() -> None:
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
@@ -96,24 +130,8 @@ def main() -> None:
     print("Initialising embeddings (Gemini gemini-embedding-001 @ 768d)...")
     embeddings = GeminiEmbeddings()
 
-    # Pre-flight: generate all embeddings BEFORE touching the existing collection.
-    # If any chunk fails (even after retries inside GeminiEmbeddings._embed), this
-    # raises and the old collection is left intact.
-    print(f"Pre-flight: generating embeddings for all {len(chunks)} chunks...")
-    _ = embeddings.embed_documents([c.page_content for c in chunks])
-    print(f"All {len(chunks)} embeddings generated successfully, proceeding with rebuild...")
+    rebuild(chunks, embeddings, connection)
 
-    print(f"Upserting into PGVector collection '{COLLECTION_NAME}'...")
-    PGVector.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        collection_name=COLLECTION_NAME,
-        connection=connection,
-        use_jsonb=True,
-        pre_delete_collection=True,  # rebuild from scratch on each run
-    )
-
-    # Verify: count rows in the collection
     # Verify: count rows in the collection
     from sqlalchemy import create_engine, text
 
