@@ -168,7 +168,7 @@ export const CLASS_INFO = {
     color: "#63e6be",
   },
   "extragalactic_new_candidate": {
-    name: "New Extragalactic Transient",
+    name: "New Extragalactic Candidate",
     emoji: "🌠",
     short: "New, potentially extragalactic transient (Fink/LSST)",
     description:
@@ -176,7 +176,7 @@ export const CLASS_INFO = {
     color: "#4dabf7",
   },
   "extragalactic_lt20mag_candidate": {
-    name: "Bright Extragalactic Transient",
+    name: "Bright Extragalactic Candidate",
     emoji: "🔆",
     short: "Bright (mag < 20), rising extragalactic candidate (Fink/LSST)",
     description:
