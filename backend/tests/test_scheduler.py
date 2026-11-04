@@ -290,6 +290,14 @@ def test_gw_refresh_does_not_run_unconditionally_at_startup():
     assert jobs["gw_refresh_startup"].func is sched.refresh_gw_events_if_stale
 
 
+def test_gw_startup_catch_up_has_a_grace_longer_than_the_first_scheduler_wakeup():
+    """The scheduler first wakes ~20 s after jobs are added; with the default
+    1 s grace the due-now catch-up was skipped as missed on every restart."""
+    job = _scheduler_jobs()["gw_refresh_startup"]
+    assert job.misfire_grace_time >= 300
+    assert job.misfire_grace_time == sched.GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS == 3600
+
+
 def _result(value):
     r = MagicMock()
     r.scalar.return_value = value

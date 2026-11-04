@@ -57,6 +57,10 @@ GW_REFRESH_STALE_AFTER = timedelta(days=8)
 # A missed Friday slot (process down at 23:20) still runs if the process is
 # back within this window; coalesce folds any backlog into a single run.
 GW_REFRESH_MISFIRE_GRACE_SECONDS = 24 * 3600
+# The startup catch-up is due "now", but the scheduler's first wake-up comes
+# ~17-20 s after jobs are added -- far past APScheduler's 1 s default grace --
+# so without an explicit grace it was skipped as "missed" on every restart.
+GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS = 3600
 
 # 15 minutes -- confirmed against real Fink LSST data (see
 # docs/lsst-ingestion-recovery.md): the worst known 15-minute burst carried
@@ -465,6 +469,7 @@ def start_background_scheduler():
         id="gw_refresh_startup",
         name="GWOSC GW Event Refresh (startup catch-up)",
         replace_existing=True,
+        misfire_grace_time=GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS,
     )
 
     # Keep-alive: run SELECT 1 every 4 minutes to keep the DB connection pool warm
