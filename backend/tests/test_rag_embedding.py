@@ -367,3 +367,38 @@ def test_the_build_constructs_its_embeddings_in_patient_mode(builder, monkeypatc
     with pytest.raises(Stop):
         builder.main()
     assert seen["kwargs"] == {"patient": True}
+
+
+def test_a_persistent_429_through_the_real_class_makes_exactly_three_requests(monkeypatch):
+    """The chat path (default mode, embed_query): no hidden outer retry multiplies
+    the attempts, and no sleep exceeds 10 s."""
+    pytest.importorskip("google.genai")
+    pytest.importorskip("langchain_core")
+    from rag.embeddings import GeminiEmbeddings
+
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+    clock = FakeClock()
+    requests = []
+
+    def embed_content(model, contents, config):
+        requests.append(contents)
+        raise RateLimitError("21s")
+
+    emb = GeminiEmbeddings(sleep=clock.sleep)             # default: patient=False
+    emb._client = SimpleNamespace(models=SimpleNamespace(embed_content=embed_content))
+
+    with pytest.raises(RateLimitError):
+        emb.embed_query("what is a kilonova?")
+
+    assert len(requests) == 3
+    assert max(clock.sleeps) <= 10.0
+    assert sum(clock.sleeps) <= 10.0 * (len(requests) - 1)
+
+
+def test_embeddings_module_has_no_tenacity_retry_left():
+    """A stacked @retry would multiply the attempts the default mode promises."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "rag" / "embeddings.py").read_text(encoding="utf-8")
+    assert "tenacity" not in src
+    assert "@retry" not in src
