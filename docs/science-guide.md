@@ -18,7 +18,7 @@ Think of it as the layer between "a telescope detected something" and "a human u
    - TNS API (for objects with reported photometry)
    - ALeRCE API (for ZTF light curves with quality scores)
 
-4. **SIMBAD Cross-Matching:** Every object is cross-matched against SIMBAD within 5 arcseconds to identify known astronomical associations (known galaxies, AGN, variable stars, etc.).
+4. **SIMBAD Cross-Matching:** Unenriched objects are cross-matched against SIMBAD within 5 arcseconds, newest first (up to 50 per 15-minute cycle), to identify known astronomical associations (known galaxies, AGN, variable stars, etc.).
 
 5. **Storage:** All enriched data is stored in PostgreSQL with PostGIS spatial indexing for efficient sky-position queries.
 
@@ -74,6 +74,7 @@ This is Rubin Scout's unique scientific feature and its primary research contrib
 - Post-merger emission (kilonova, afterglow, late-time components)
 
 **Limitations of the current approach:**
+- **No skymaps ingested yet:** no GW event currently carries a sky position or credible area, so the "Search for optical counterparts" button returns HTTP 422 for every event. The method described here applies once skymap ingestion lands (see `docs/gw-skymaps.md`).
 - **Circular approximation:** Uses skymap centroid + circular radius rather than the full HEALPix probability map. This simplification works well for compact skymaps (GW170817) but is less accurate for large, irregular, or multi-modal distributions.
 - **No luminosity distance filtering:** Does not incorporate the GW posterior on luminosity distance. A future version could filter candidates by comparing host galaxy redshift to the GW distance estimate.
 - **Uniform probability assumption:** All candidates within the credible region are treated equally; the actual probability density within the region is not used for ranking.
@@ -91,7 +92,11 @@ This is Rubin Scout's unique scientific feature and its primary research contrib
 
 For each ingested object, Rubin Scout queries SIMBAD within 5 arcseconds. This identifies whether the transient position coincides with a known astronomical object (galaxy, star, AGN, etc.).
 
-**What the match distance means:** 5 arcseconds is a generous radius for point-source matching at ZTF's ~2 arcsecond resolution. In crowded fields (galactic plane, dense clusters), spurious matches are possible. The match distance is always stored and displayed, allowing users to assess the quality of the association.
+**Which object is stored:** SIMBAD returns every object inside the 5-arcsecond cone in no particular order. Rubin Scout computes the angular separation from the transient to each one and stores the nearest, with that real separation. Matches made before this was fixed stored a placeholder separation of 0.0 arcseconds; those rows have not been backfilled, so a 0.0 on an older match means "unknown", not "exactly coincident". If SIMBAD returns no usable position for a match, the separation is left empty rather than invented.
+
+**Which SIMBAD:** queries go to `simbad.cds.unistra.fr` first and fall back to the mirror `simbad.harvard.edu` (configurable with `SIMBAD_SERVER`). The Render deployment cannot reach CDS, so it uses the Harvard mirror. Both serve the same catalog.
+
+**What the match distance means:** 5 arcseconds is a generous radius for point-source matching at ZTF's ~2 arcsecond resolution. In crowded fields (galactic plane, dense clusters), spurious matches are possible; the nearest object is not necessarily the physical counterpart. The match distance is stored and displayed, allowing users to assess the quality of the association.
 
 **Match interpretation:**
 - **< 1 arcsecond:** Very likely physical association
@@ -137,7 +142,7 @@ The raw data (RA/Dec, MJD, magnitude, classifier probabilities) is always availa
 
 1. **Classification accuracy depends on upstream sources.** Rubin Scout does not reclassify. It trusts TNS spectroscopic classifications (which are human-verified) and displays ALeRCE ML classifications with full probability distributions. If ALeRCE misclassifies an object, that error propagates.
 
-2. **SIMBAD matching is positional only.** A 5-arcsecond match means "there's a known object near this position," not necessarily a physical association. Users should verify plausible associations using the match distance and object types.
+2. **SIMBAD matching is positional only.** A 5-arcsecond match means "there's a known object near this position," not necessarily a physical association. Users should verify plausible associations using the match distance and object types. Only the nearest object is stored, and older matches carry a placeholder 0.0 separation (see above).
 
 3. **GW cross-matching is approximate.** The circular skymap approximation and uniform probability assumption are simplifications of the real probability distribution. See the GW section above for detailed limitations.
 
