@@ -13,7 +13,6 @@ Required env vars:
 """
 
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from langchain.schema import Document
 from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from rag.class_info import ClassInfoError, class_info_texts, parse_class_info
 from rag.embeddings import GeminiEmbeddings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,50 +39,17 @@ CHUNK_OVERLAP = 100
 
 
 def _extract_class_info_docs() -> list[Document]:
-    """Parse CLASS_INFO from cosmos.js and turn each entry into a Document."""
-    raw = COSMOS_JS.read_text(encoding="utf-8")
+    """One Document per CLASS_INFO entry in cosmos.js.
 
-    # Extract content between CLASS_INFO = { ... };
-    match = re.search(r"export const CLASS_INFO\s*=\s*(\{.*?\});", raw, re.DOTALL)
-    if not match:
-        print("WARNING: Could not parse CLASS_INFO from cosmos.js — skipping", file=sys.stderr)
-        return []
-
-    block = match.group(1)
-
-    # Find each top-level key + object: "key": { ... }
-    # We parse by finding key patterns then the next closing brace at depth 0
-    entries = re.findall(
-        r'"([^"]+)"\s*:\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}',
-        block,
-    )
-
-    docs = []
-    for key, body in entries:
-        # Pull out name, short, description fields if present
-        name_m = re.search(r'"name"\s*:\s*"([^"]*)"', body)
-        short_m = re.search(r'"short"\s*:\s*"([^"]*)"', body)
-        desc_m = re.search(r'"description"\s*:\s*"([^"]*)"', body)
-        danger_m = re.search(r'"danger"\s*:\s*"([^"]*)"', body)
-
-        parts = [f"Transient class: {key}"]
-        if name_m:
-            parts.append(f"Name: {name_m.group(1)}")
-        if short_m:
-            parts.append(f"Summary: {short_m.group(1)}")
-        if desc_m:
-            parts.append(f"Description: {desc_m.group(1)}")
-        if danger_m:
-            parts.append(f"Danger note: {danger_m.group(1)}")
-
-        docs.append(
-            Document(
-                page_content="\n".join(parts),
-                metadata={"source": "cosmos.js", "class_key": key},
-            )
-        )
-
-    return docs
+    Raises ClassInfoError (aborting the build before the existing collection
+    is touched) if the file cannot be read, a class has no description, or the
+    parsed class count disagrees with the entries in the file.
+    """
+    class_info = parse_class_info(COSMOS_JS.read_text(encoding="utf-8"))
+    return [
+        Document(page_content=text, metadata={"source": "cosmos.js", "class_key": key})
+        for key, text in class_info_texts(class_info)
+    ]
 
 
 def _load_markdown_docs() -> list[Document]:
@@ -112,7 +79,11 @@ def main() -> None:
         connection = "postgresql+psycopg://" + connection[len("postgresql://"):]
 
     print("Loading source documents...")
-    raw_docs = _load_markdown_docs() + _extract_class_info_docs()
+    try:
+        raw_docs = _load_markdown_docs() + _extract_class_info_docs()
+    except ClassInfoError as exc:
+        print(f"ERROR: cannot build the knowledge base: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"  {len(raw_docs)} source document(s) loaded")
 
     splitter = RecursiveCharacterTextSplitter(
