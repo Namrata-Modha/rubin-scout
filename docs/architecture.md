@@ -60,7 +60,7 @@ Rubin Scout is a downstream alert processing tool that ingests transient discove
 
 **Primary Source: TNS Daily CSV**
 
-Every 15 minutes, the ingestion scheduler fetches the previous day's TNS CSV file (updated daily at midnight UTC). TNS provides spectroscopically confirmed transient discoveries with precise sky coordinates, discovery dates, redshifts, and human-verified classifications.
+Every 15 minutes, the ingestion scheduler runs one shared cycle: TNS, then ALeRCE, then SIMBAD. The cycle fetches the previous day's TNS CSV file (updated daily at midnight UTC). TNS provides spectroscopically confirmed transient discoveries with precise sky coordinates, discovery dates, redshifts, and human-verified classifications.
 
 **Enrichment Layer 1: ALeRCE ML Classifications**
 
@@ -76,7 +76,11 @@ For each object, the system attempts to fetch light curve data (photometry) from
 
 **Enrichment Layer 3: SIMBAD Cross-Matching**
 
-Every unenriched object is cross-matched against SIMBAD within 5 arcseconds to identify known astronomical associations (galaxies, AGN, known variables, etc.).
+Each cycle cross-matches the 50 newest unenriched objects against SIMBAD within 5 arcseconds to identify known astronomical associations (galaxies, AGN, known variables, etc.). The nearest returned object is stored, together with its real angular separation computed from the two positions. Rows matched before this was fixed stored a placeholder 0.0 and have not been backfilled.
+
+The SIMBAD step is bounded so it can never stall the cycle: each call is capped at 15 seconds, the whole step at a 300-second budget, and the step stops after 3 failures in a row. Database transactions are kept short (one commit per matched object), and the cycle job runs with `max_instances=1` and `coalesce` so it never overlaps itself. Between 2026-10-28 and 2026-11-03 the cycle ran every 2 hours instead of every 15 minutes because the SIMBAD step had no working timeout; that is fixed.
+
+SIMBAD is queried at `simbad.cds.unistra.fr` by default and falls back to the mirror `simbad.harvard.edu` when the first host stops answering. The primary host is set with `SIMBAD_SERVER`. As of 2026-11, CDS cannot be reached from the Render deployment, so production matches should come from the Harvard mirror.
 
 **Storage**
 
@@ -137,6 +141,10 @@ The unique feature. When a user clicks "Search for optical counterparts" on a GW
 
 For poorly localized events (no centroid available), falls back to time-window-only search filtered by transient classifications most likely to be GW counterparts (SNe, TDE, KN, novae).
 
+**Current limitation:** no skymaps are ingested yet, so no GW event carries a sky position or credible area. Until they are (see `docs/gw-skymaps.md`), the "Search for optical counterparts" button, `POST /api/gw/events/{id}/crossmatch`, returns HTTP 422 for every GW event.
+
+**Refresh schedule:** the GW catalog is refreshed from GWOSC by a weekly cron job, Fridays at 23:20 UTC. On startup a catch-up refresh runs only if the last completed refresh is more than 8 days old. The scheduled jobs, except the 4-minute keep-alive, have explicit misfire grace times, so a run that fires late because the scheduler woke late or the event loop was busy still happens. Jobs are held in memory, so a slot that passes while the process is down is not replayed; the GW catch-up checks the last completed run on startup instead.
+
 ## Cosmos Translation Layer
 
 The frontend's `cosmos.js` module transforms raw astronomy data into accessible language:
@@ -165,6 +173,7 @@ Environment variables for production:
 - `VITE_API_URL` -- Render backend URL (frontend env var)
 - `TNS_USER_ID`, `TNS_USER_NAME` -- TNS credentials for CSV downloads
 - `TNS_BOT_ID`, `TNS_BOT_NAME`, `TNS_API_KEY` -- TNS bot credentials for API access (optional)
+- `SIMBAD_SERVER` -- primary SIMBAD host, `simbad.cds.unistra.fr` (default) or `simbad.harvard.edu`; the other is the fallback
 
 ## API Design
 

@@ -1,6 +1,6 @@
 # LSST ingestion: bounded retries, cluster recovery, and stall visibility
 
-This note documents the investigation behind three fixes to `backend/app/ingestion/lsst_service.py`'s pagination and retry design, plus the real evidence each one is based on. It's the reference for anyone revisiting `MAX_WINDOW_SPAN`, `CLUSTER_FETCH_SIZE`, `_fetch_cluster`, `check_stall`, or the still-open LSST scheduler interval decision. Verified 2026-08.
+This note documents the investigation behind three fixes to `backend/app/ingestion/lsst_service.py`'s pagination and retry design, plus the real evidence each one is based on. It's the reference for anyone revisiting `MAX_WINDOW_SPAN`, `CLUSTER_FETCH_SIZE`, `_fetch_cluster`, `check_stall`, or the still-open LSST scheduler interval decision. Verified 2026-08; the closing section was updated 2026-11 after Rubin resumed delivering alerts.
 
 ## The window-growth bug (MAX_WINDOW_SPAN)
 
@@ -53,4 +53,8 @@ Per-tag volume, gathered live against the two highest-volume nights on record (`
 
 `most_likely_sn` dominates: ~5,574 alerts/hour average across a ~7.4-hour observing session, peaking at 17,293 in the single busiest hour and 8,342 in the single busiest 15-minute window (see above). A daily or hourly cadence would routinely exceed the per-cycle cap on busy nights; a 15-minute provisional interval (`scheduler.py`'s `LSST_INGESTION_INTERVAL_SECONDS`) keeps the worst known case at 83% of the cap. This is provisional pending final confirmation, and `MAX_WINDOW_SPAN` must be revisited together with it if it changes.
 
-As of this writing, Fink's LSST deployment has recorded no night past 2026-07-14 (confirmed live via `GET /api/v1/statistics` on 2026-08-04, three weeks later) — Rubin Observatory's summit was evacuated 2026-07-14 due to a record-breaking storm and had not resumed per the 2026-07-24 community status update either. This is a real, documented, presumably-temporary closure, not a Fink/API failure.
+## Recovery: Rubin is delivering alerts again
+
+Rubin Observatory's summit was evacuated 2026-07-14 due to a record-breaking storm. Fink's LSST deployment recorded no night past 2026-07-14 (confirmed live via `GET /api/v1/statistics` on 2026-08-04, and consistent with the 2026-07-24 community status update). That was a real, documented closure upstream, not a Fink/API failure.
+
+**Alerts resumed on 2026-10-30.** Production holds 2,122 `lsst_fink` alerts from that one night (detected 00:23 to 03:16 UTC) and none since, as of 2026-11-04. As before, alerts only exist while Rubin is observing, so a quiet stretch of nights is an expected upstream state rather than an ingestion fault.

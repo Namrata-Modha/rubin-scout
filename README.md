@@ -17,10 +17,11 @@ Rubin Scout is designed for students, citizen scientists, and researchers new to
 | Source | What it provides | Cadence |
 |--------|-----------------|---------|
 | [Fink broker (ZTF)](https://fink-portal.org) | Live ZTF transient alerts: SN candidates, kilonova candidates, SLSN candidates, early SN Ia — classified by ML pipelines | Daily at 10:00 UTC |
+| [Fink broker (LSST/Rubin)](https://lsst.fink-portal.org) | Live Rubin/LSST alerts, pulled through five Fink tags (`most_likely_sn`, `sn_near_galaxy_candidate`, `in_tns`, `extragalactic_new_candidate`, `extragalactic_lt20mag_candidate`); LSST has no kilonova or SLSN tag | Every 15 minutes |
 | [IAU Transient Name Server](https://www.wis-tns.org) | Spectroscopically classified transients | Daily CSV + API |
 | [ALeRCE](https://alerce.science) | ZTF light curves, g/r band photometry, ML classifications | Per ingestion cycle |
-| [GWOSC / GWTC](https://gwosc.org) | Full GWTC catalog of GW events (GPS→UTC, all versions) | Weekly refresh |
-| [SIMBAD](https://simbad.u-strasbg.fr) | Catalog cross-matches within 5 arcsec | Per new object |
+| [GWOSC / GWTC](https://gwosc.org) | Full GWTC catalog of GW events (GPS→UTC, all versions) | Weekly refresh (Fridays 23:20 UTC), plus a startup catch-up if the last run is over 8 days old |
+| [SIMBAD](https://simbad.u-strasbg.fr) | Nearest catalog cross-match within 5 arcsec, with its real separation (CDS host with automatic fallback to the Harvard mirror; set with `SIMBAD_SERVER`) | Every 15-minute ingestion cycle |
 | [Legacy Survey](https://www.legacysurvey.org) | Optical cutout images | On demand |
 | [CHIME/FRB](https://www.chime-frb.ca) | Fast Radio Burst catalog (Catalog 1, 536 FRBs, with positional uncertainties) | Monthly refresh + manual trigger (`POST /api/ingest/chime/trigger`) |
 
