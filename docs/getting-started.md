@@ -89,7 +89,7 @@ npm run dev
 
 Open http://localhost:5173. You should see the dashboard with event cards, sky map, and filters.
 
-Navigate to http://localhost:5173/gravitational-waves to explore GW events and run cross-matching.
+Navigate to http://localhost:5173/gravitational-waves to explore GW events. The "Search for optical counterparts" button currently returns an error (HTTP 422) for every event, because no skymaps are ingested yet -- see docs/gw-skymaps.md.
 
 ## Windows Shortcut
 
@@ -109,11 +109,10 @@ Use `stop.bat` to shut everything down cleanly.
 - View cross-match results from SIMBAD
 - Check classification probabilities
 
-**Test GW cross-matching:**
+**Browse GW events:**
 - Go to Gravitational Waves page
 - Click on GW170817 (the famous neutron star merger)
-- Click "Search for Optical Counterparts"
-- See if any candidates appear in the time/position window
+- "Search for Optical Counterparts" returns HTTP 422 for every event until skymap ingestion is built (docs/gw-skymaps.md), so no candidates will appear
 
 ## Project Structure
 
@@ -149,6 +148,7 @@ Key settings in `.env`:
 | `TNS_BOT_ID` | (empty) | TNS bot ID for API access (optional) |
 | `TNS_BOT_NAME` | (empty) | TNS bot name for API access (optional) |
 | `TNS_API_KEY` | (empty) | TNS API key for bot access (optional) |
+| `SIMBAD_SERVER` | `simbad.cds.unistra.fr` | Primary SIMBAD host; `simbad.harvard.edu` is the other option and the automatic fallback |
 | `VITE_API_URL` | (empty) | Backend URL for frontend in production |
 
 **TNS Credentials:** Optional for local development. The seed script works without them using publicly available TNS data. For production ingestion or API access, you'll need to register at wis-tns.org and create bot credentials.
@@ -161,7 +161,7 @@ Key settings in `.env`:
 
 **TNS 404 errors in logs:** TNS daily CSV files are only available for recent days. If seeding historical data, some dates may not have published files. This is normal.
 
-**SIMBAD timeout:** SIMBAD occasionally has downtime or rate limits. Cross-matching retries on the next ingestion cycle. Everything else works without it.
+**SIMBAD timeout:** SIMBAD occasionally has downtime or rate limits, and some networks (including Render) cannot reach `simbad.cds.unistra.fr` at all. Cross-matching falls back to the mirror `simbad.harvard.edu` automatically; set `SIMBAD_SERVER=simbad.harvard.edu` to make it the first choice. Each SIMBAD call is capped at 15 seconds and the step stops after 3 failures in a row, so an unreachable SIMBAD never blocks the rest of the cycle; unmatched objects are retried on the next ingestion cycle. Everything else works without it.
 
 **Docker port conflict:** If port 5432 is in use, change it in `docker-compose.yml` and update `DATABASE_URL` in `.env`.
 
@@ -188,4 +188,4 @@ For production deployment (Vercel + Render + Supabase), see [docs/architecture.m
 **For everyone:**
 - Try filtering alerts by type and confidence
 - Explore light curves for different transient classes
-- Test the GW cross-matching on historical events
+- Browse the GW event catalog (the counterpart search itself is waiting on skymap ingestion)
