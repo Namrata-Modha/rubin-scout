@@ -81,7 +81,7 @@ def test_a_429_waits_at_least_the_requested_delay_and_then_succeeds():
             raise RateLimitError("21s")
         return "vector"
 
-    assert call_with_retry(fn, limiter, clock.sleep) == "vector"
+    assert call_with_retry(fn, limiter, clock.sleep, patient=True) == "vector"
     assert len(attempts) == 4
     waits = [s for s in clock.sleeps if s >= 21]
     assert len(waits) == 3 and all(w >= 21 for w in waits)
@@ -99,7 +99,7 @@ def test_a_429_is_retried_far_longer_than_three_times():
             raise RateLimitError("21s")
         return "ok"
 
-    assert call_with_retry(fn, limiter, clock.sleep) == "ok"
+    assert call_with_retry(fn, limiter, clock.sleep, patient=True) == "ok"
 
 
 def test_a_persistent_429_eventually_raises():
@@ -112,7 +112,7 @@ def test_a_persistent_429_eventually_raises():
         raise RateLimitError("5s")
 
     with pytest.raises(RateLimitError):
-        call_with_retry(fn, limiter, clock.sleep)
+        call_with_retry(fn, limiter, clock.sleep, patient=True)
     assert len(calls) == pacing.MAX_RATE_LIMIT_ATTEMPTS
 
 
@@ -128,6 +128,113 @@ def test_other_errors_get_a_short_retry_then_raise():
     with pytest.raises(ValueError):
         call_with_retry(fn, limiter, clock.sleep)
     assert len(calls) == pacing.MAX_OTHER_ATTEMPTS
+
+
+# --- default (query-time) mode vs patient (build) mode ---------------------------
+
+def test_default_mode_gives_up_quickly_on_a_429_and_never_sleeps_long():
+    """The live chat path: a visitor is waiting, so no waiting out a 21 s delay."""
+    clock = FakeClock()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise RateLimitError("21s")
+
+    with pytest.raises(RateLimitError):
+        call_with_retry(fn, None, clock.sleep)           # patient defaults to False
+    assert len(calls) == pacing.MAX_OTHER_ATTEMPTS == 3
+    assert clock.sleeps                                   # it did back off a little
+    assert max(clock.sleeps) <= 10.0
+    assert sum(clock.sleeps) <= 10.0 * 2                  # two gaps between 3 attempts
+
+
+def test_default_mode_still_recovers_from_a_transient_failure():
+    clock = FakeClock()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RateLimitError("21s")
+        return "vector"
+
+    assert call_with_retry(fn, None, clock.sleep) == "vector"
+    assert max(clock.sleeps) <= 10.0
+
+
+def test_patient_mode_waits_out_a_21_second_delay():
+    clock = FakeClock()
+    limiter = RateLimiter(90, clock=clock.time, sleep=clock.sleep)
+    calls = []
+
+    def fn():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RateLimitError("21s")
+        return "vector"
+
+    assert call_with_retry(fn, limiter, clock.sleep, patient=True) == "vector"
+    assert any(21 <= s <= 90 for s in clock.sleeps)
+
+
+def test_patient_mode_raises_clearly_when_the_api_asks_for_an_hour():
+    clock = FakeClock()
+    limiter = RateLimiter(90, clock=clock.time, sleep=clock.sleep)
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise RateLimitError("3600s")
+
+    with pytest.raises(pacing.EmbeddingQuotaExhausted, match="3600s.*quota"):
+        call_with_retry(fn, limiter, clock.sleep, patient=True)
+    assert len(calls) == 1
+    assert clock.sleeps == []                             # it did not sleep at all
+
+
+def test_patient_mode_caps_a_single_wait_at_ninety_seconds():
+    clock = FakeClock()
+    calls = []
+
+    def fn():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RateLimitError("80s")                   # 81 s with slack: allowed
+        if len(calls) == 2:
+            raise RateLimitError("90s")                   # 91 s with slack: over the cap
+        return "unreachable"
+
+    with pytest.raises(pacing.EmbeddingQuotaExhausted):
+        call_with_retry(fn, None, clock.sleep, patient=True)
+    assert max(clock.sleeps) <= pacing.MAX_PATIENT_WAIT_SECONDS
+
+
+def test_the_limiter_is_thread_safe_and_hands_out_distinct_slots():
+    import threading
+
+    sleeps = []
+    limiter = RateLimiter(60, clock=lambda: 0.0, sleep=sleeps.append)   # 1 s apart
+    threads = [threading.Thread(target=limiter.wait) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # 20 callers at the same instant: the first goes at once, the rest are
+    # queued at 1 s, 2 s, ... 19 s -- no two share a slot.
+    assert sorted(sleeps) == [float(i) for i in range(1, 20)]
+
+
+def test_default_embeddings_have_no_shared_limiter_but_patient_ones_do(monkeypatch):
+    pytest.importorskip("google.genai")
+    pytest.importorskip("langchain_core")
+    from rag.embeddings import GeminiEmbeddings
+
+    monkeypatch.setenv("GEMINI_API_KEY", "not-a-real-key")
+    default = GeminiEmbeddings()
+    patient = GeminiEmbeddings(patient=True)
+    assert default._patient is False and default._limiter is None
+    assert patient._patient is True and isinstance(patient._limiter, RateLimiter)
 
 
 # --- GeminiEmbeddings: one request per chunk ------------------------------------
@@ -150,6 +257,7 @@ def test_gemini_embeddings_makes_one_request_per_text_and_retries_a_429():
     emb._client = SimpleNamespace(models=SimpleNamespace(embed_content=embed_content))
     emb._limiter = RateLimiter(90, clock=clock.time, sleep=clock.sleep)
     emb._sleep = clock.sleep
+    emb._patient = True
 
     out = emb.embed_documents(["a", "b", "c"])
     assert len(out) == 3
@@ -238,3 +346,24 @@ def test_a_short_vector_list_refuses_to_touch_the_collection(builder):
         builder.rebuild(_chunks(4), ShortEmbeddings(), "postgresql+psycopg://x/y",
                         store_cls=FakeStore)
     assert FakeStore.calls == []
+
+
+def test_the_build_constructs_its_embeddings_in_patient_mode(builder, monkeypatch):
+    seen = {}
+
+    class RecordingEmbeddings:
+        def __init__(self, *args, **kwargs):
+            seen["kwargs"] = kwargs
+
+    class Stop(Exception):
+        pass
+
+    def stop_before_any_database_work(*args, **kwargs):
+        raise Stop
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
+    monkeypatch.setattr(builder, "GeminiEmbeddings", RecordingEmbeddings)
+    monkeypatch.setattr(builder, "rebuild", stop_before_any_database_work)
+    with pytest.raises(Stop):
+        builder.main()
+    assert seen["kwargs"] == {"patient": True}

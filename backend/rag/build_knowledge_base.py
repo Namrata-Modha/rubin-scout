@@ -128,7 +128,7 @@ def main() -> None:
     print(f"  {len(chunks)} chunks after splitting")
 
     print("Initialising embeddings (Gemini gemini-embedding-001 @ 768d)...")
-    embeddings = GeminiEmbeddings()
+    embeddings = GeminiEmbeddings(patient=True)
 
     rebuild(chunks, embeddings, connection)
 

@@ -34,14 +34,19 @@ class GeminiEmbeddings(Embeddings):
         self,
         limiter: RateLimiter | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        patient: bool = False,
     ) -> None:
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
         self._client = genai.Client(api_key=api_key)
-        # One limiter per instance, shared by every call, so the whole build
-        # (and any retries) stays under the free tier's ~100 requests/minute.
-        self._limiter = limiter or RateLimiter()
+        # patient=True is for the offline knowledge-base build: it paces every
+        # request under the free tier's ~100/minute and waits out 429s.
+        # The default is for the live chat assistant, where a visitor is
+        # waiting in a worker thread: no pacing, at most 3 attempts with a
+        # 1-10 s backoff, and a 429's retry delay is never slept out.
+        self._patient = patient
+        self._limiter = limiter if limiter is not None else (RateLimiter() if patient else None)
         self._sleep = sleep
 
     def _embed(self, text: str, task_type: str) -> List[float]:
@@ -56,7 +61,7 @@ class GeminiEmbeddings(Embeddings):
             )
             return _l2_normalise(response.embeddings[0].values)
 
-        return call_with_retry(request, self._limiter, self._sleep)
+        return call_with_retry(request, self._limiter, self._sleep, patient=self._patient)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return [self._embed(t, "RETRIEVAL_DOCUMENT") for t in texts]
