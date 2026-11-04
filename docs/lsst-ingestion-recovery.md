@@ -57,4 +57,4 @@ Per-tag volume, gathered live against the two highest-volume nights on record (`
 
 Rubin Observatory's summit was evacuated 2026-07-14 due to a record-breaking storm. Fink's LSST deployment recorded no night past 2026-07-14 (confirmed live via `GET /api/v1/statistics` on 2026-08-04, and consistent with the 2026-07-24 community status update). That was a real, documented closure upstream, not a Fink/API failure.
 
-**It has recovered.** Alerts are flowing again: production holds 2,122 `lsst_fink` alerts from 2026-10-30 onward. Rubin is no longer offline, and nothing on the platform should describe it as such. As before, alerts only exist while Rubin is observing, so a quiet stretch of nights is an expected upstream state rather than an ingestion fault.
+**Alerts resumed on 2026-10-30.** Production holds 2,122 `lsst_fink` alerts from that one night (detected 00:23 to 03:16 UTC) and none since, as of 2026-11-04. As before, alerts only exist while Rubin is observing, so a quiet stretch of nights is an expected upstream state rather than an ingestion fault.
