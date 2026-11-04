@@ -88,6 +88,31 @@ This is Rubin Scout's unique scientific feature and its primary research contrib
 
 **Pre-loaded events:** Five notable GW events carry hand-written descriptions, keyed on the long-form names GWOSC actually serves: GW170817 (first BNS with EM counterpart AT2017gfo), GW190521 (most massive BBH), GW200105_162426 and GW200115_042309 (first NSBH detections), and GW231123_135430 (highest-mass BBH). Every other event's description is generated from its stored catalog parameters instead.
 
+## Rubin/LSST Alerts
+
+Rubin Observatory's alerts reach Rubin Scout through a separate Fink deployment (`lsst.fink-portal.org`). Unlike ZTF, LSST alerts carry no single classification label. Fink instead offers named "tags": curated selections of alerts. Rubin Scout pulls five of them every 15 minutes. The descriptions below are Fink's own, as served by its `/api/v1/tags` endpoint:
+
+| Tag | What it selects, in plain words |
+|-----|-------------------------------|
+| `most_likely_sn` | Alerts likely to be supernovae, according to Fink's SuperNNova and CATS classifiers |
+| `sn_near_galaxy_candidate` | Alerts that match a galaxy in catalogs and have properties consistent with a supernova |
+| `in_tns` | Alerts that already had a known counterpart in the Transient Name Server (a candidate or a confirmed transient) when Rubin emitted the alert |
+| `extragalactic_new_candidate` | Alerts that are new (first appeared less than 5 days ago), brighter than magnitude 24, and potentially extragalactic, with a fading or rising rate that passes Fink's cuts |
+| `extragalactic_lt20mag_candidate` | Alerts that are rising, brighter than magnitude 20, and extragalactic candidates |
+
+**One tag per alert.** The tags overlap, but each alert is stored once. The tags are pulled in the order listed above, and an alert is kept under the first tag that returned it; the same alert found later under another tag is ignored. So an alert that is both a likely supernova and in TNS appears as `most_likely_sn`. The stored tag is the alert's "classification" on the platform. It is a selection label, not a spectroscopic or physical classification.
+
+**No kilonova or SLSN.** LSST has no kilonova or superluminous-supernova tag or score, so those never appear for Rubin alerts.
+
+**What the detail page shows.** Each section appears only when there is data for it:
+- **Direction, declination, observation time and filter band**, with an approximate constellation.
+- **Brightness:** an AB magnitude when the difference flux is positive, the difference flux in nanojanskys, and the signal-to-noise ratio. A negative difference flux means the source is fainter than the reference image, so it has no magnitude and is shown as fading.
+- **Detection quality:** Rubin's reliability score, with its version.
+- **Fink LSST classifiers:** only the classifiers Fink actually ran. These are the CATS confidence, SuperNNova supernova-versus-other and early Type Ia. A CATS score is hidden when CATS did not run, and its class number is never shown.
+- **Catalog cross-match:** only the catalogs that returned a value, such as SIMBAD type, TNS name and type, Gaia, Legacy Survey, VSX and host-galaxy fields. The Mangrove angular-distance field is hidden because its unit is unconfirmed.
+
+Alerts only exist while Rubin is observing. After the July 2026 storm closure, alerts resumed on 2026-10-30 (see `lsst-ingestion-recovery.md`).
+
 ## SIMBAD Cross-Matching
 
 For each ingested object, Rubin Scout queries SIMBAD within 5 arcseconds. This identifies whether the transient position coincides with a known astronomical object (galaxy, star, AGN, etc.).
