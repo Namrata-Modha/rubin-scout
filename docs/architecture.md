@@ -80,7 +80,7 @@ Each cycle cross-matches the 50 newest unenriched objects against SIMBAD within 
 
 The SIMBAD step is bounded so it can never stall the cycle: each call is capped at 15 seconds, the whole step at a 300-second budget, and the step stops after 3 failures in a row. Database transactions are kept short (one commit per matched object), and the cycle job runs with `max_instances=1` and `coalesce` so it never overlaps itself. Between 2026-10-28 and 2026-11-03 the cycle ran every 2 hours instead of every 15 minutes because the SIMBAD step had no working timeout; that is fixed.
 
-SIMBAD is queried at `simbad.cds.unistra.fr` by default and falls back to the mirror `simbad.harvard.edu` when the first host stops answering. The primary host is set with `SIMBAD_SERVER`. CDS cannot be reached from the Render deployment, so production matches come from the Harvard mirror.
+SIMBAD is queried at `simbad.cds.unistra.fr` by default and falls back to the mirror `simbad.harvard.edu` when the first host stops answering. The primary host is set with `SIMBAD_SERVER`. As of 2026-11, CDS cannot be reached from the Render deployment, so production matches should come from the Harvard mirror.
 
 **Storage**
 

@@ -94,7 +94,7 @@ For each ingested object, Rubin Scout queries SIMBAD within 5 arcseconds. This i
 
 **Which object is stored:** SIMBAD returns every object inside the 5-arcsecond cone in no particular order. Rubin Scout computes the angular separation from the transient to each one and stores the nearest, with that real separation. Matches made before this was fixed stored a placeholder separation of 0.0 arcseconds; those rows have not been backfilled, so a 0.0 on an older match means "unknown", not "exactly coincident". If SIMBAD returns no usable position for a match, the separation is left empty rather than invented.
 
-**Which SIMBAD:** queries go to `simbad.cds.unistra.fr` first and fall back to the mirror `simbad.harvard.edu` (configurable with `SIMBAD_SERVER`). The Render deployment cannot reach CDS, so it uses the Harvard mirror. Both serve the same catalog.
+**Which SIMBAD:** queries go to `simbad.cds.unistra.fr` first and fall back to the mirror `simbad.harvard.edu` (configurable with `SIMBAD_SERVER`). As of 2026-11, the Render deployment cannot reach CDS, so it should use the Harvard mirror. Both serve the same catalog.
 
 **What the match distance means:** 5 arcseconds is a generous radius for point-source matching at ZTF's ~2 arcsecond resolution. In crowded fields (galactic plane, dense clusters), spurious matches are possible; the nearest object is not necessarily the physical counterpart. The match distance is stored and displayed, allowing users to assess the quality of the association.
 

@@ -161,7 +161,7 @@ Key settings in `.env`:
 
 **TNS 404 errors in logs:** TNS daily CSV files are only available for recent days. If seeding historical data, some dates may not have published files. This is normal.
 
-**SIMBAD timeout:** SIMBAD occasionally has downtime or rate limits, and some networks (including Render) cannot reach `simbad.cds.unistra.fr` at all. Cross-matching falls back to the mirror `simbad.harvard.edu` automatically; set `SIMBAD_SERVER=simbad.harvard.edu` to make it the first choice. Each SIMBAD call is capped at 15 seconds and the step stops after 3 failures in a row, so an unreachable SIMBAD never blocks the rest of the cycle; unmatched objects are retried on the next ingestion cycle. Everything else works without it.
+**SIMBAD timeout:** SIMBAD occasionally has downtime or rate limits, and some networks (including Render, as of 2026-11) cannot reach `simbad.cds.unistra.fr` at all. Cross-matching falls back to the mirror `simbad.harvard.edu` automatically; set `SIMBAD_SERVER=simbad.harvard.edu` to make it the first choice. Each SIMBAD call is capped at 15 seconds and the step stops after 3 failures in a row, so an unreachable SIMBAD never blocks the rest of the cycle; unmatched objects are retried on the next ingestion cycle. Everything else works without it.
 
 **Docker port conflict:** If port 5432 is in use, change it in `docker-compose.yml` and update `DATABASE_URL` in `.env`.
 
