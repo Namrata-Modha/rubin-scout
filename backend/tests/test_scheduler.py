@@ -290,6 +290,33 @@ def test_gw_refresh_does_not_run_unconditionally_at_startup():
     assert jobs["gw_refresh_startup"].func is sched.refresh_gw_events_if_stale
 
 
+def test_gw_startup_catch_up_has_a_grace_longer_than_the_first_scheduler_wakeup():
+    """The scheduler first wakes ~20 s after jobs are added; with the default
+    1 s grace the due-now catch-up was skipped as missed on every restart."""
+    job = _scheduler_jobs()["gw_refresh_startup"]
+    assert job.misfire_grace_time >= 300
+    assert job.misfire_grace_time == sched.GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS == 3600
+
+
+def test_lsst_ingestion_has_the_cycle_jobs_misfire_grace():
+    """Due at startup, so with the 1 s default it was skipped as missed on
+    every restart and first ran a full interval later."""
+    job = _scheduler_jobs()["lsst_ingestion"]
+    assert job.misfire_grace_time >= 300
+    assert job.misfire_grace_time == sched.CYCLE_JOB_OPTIONS["misfire_grace_time"]
+    assert job.max_instances == 1 and job.coalesce is True
+
+
+def test_fink_and_chime_crons_have_explicit_graces():
+    jobs = _scheduler_jobs()
+    fink, chime = jobs["fink_ingestion"], jobs["chime_ingestion"]
+    assert fink.misfire_grace_time == 3600
+    assert chime.misfire_grace_time == 86400
+    for job in (fink, chime):
+        assert job.max_instances == 1
+        assert job.coalesce is True
+
+
 def _result(value):
     r = MagicMock()
     r.scalar.return_value = value

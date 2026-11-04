@@ -57,6 +57,16 @@ GW_REFRESH_STALE_AFTER = timedelta(days=8)
 # A missed Friday slot (process down at 23:20) still runs if the process is
 # back within this window; coalesce folds any backlog into a single run.
 GW_REFRESH_MISFIRE_GRACE_SECONDS = 24 * 3600
+# The startup catch-up is due "now", but the scheduler's first wake-up comes
+# ~17-20 s after jobs are added -- far past APScheduler's 1 s default grace --
+# so without an explicit grace it was skipped as "missed" on every restart.
+GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS = 3600
+
+# Same reasoning for the other jobs that were left on the 1 s default: a
+# daily/monthly cron slot, or a due-at-startup run, is skipped as missed if the
+# event loop is busy (or the scheduler wakes late) when it fires.
+FINK_INGESTION_MISFIRE_GRACE_SECONDS = 3600
+CHIME_INGESTION_MISFIRE_GRACE_SECONDS = 24 * 3600
 
 # 15 minutes -- confirmed against real Fink LSST data (see
 # docs/lsst-ingestion-recovery.md): the worst known 15-minute burst carried
@@ -412,6 +422,9 @@ def start_background_scheduler():
         id="fink_ingestion",
         name="Fink/ZTF Live Alert Ingestion",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=FINK_INGESTION_MISFIRE_GRACE_SECONDS,
     )
 
     # Fink/LSST (Rubin) live alerts -- see LSST_INGESTION_INTERVAL_SECONDS's
@@ -426,6 +439,7 @@ def start_background_scheduler():
         id="lsst_ingestion",
         name="Fink/LSST (Rubin) Live Alert Ingestion",
         replace_existing=True,
+        **CYCLE_JOB_OPTIONS,
     )
 
     # CHIME/FRB Catalog 1 — static 2021 release, refresh monthly (1st, 03:00 UTC).
@@ -440,6 +454,9 @@ def start_background_scheduler():
         id="chime_ingestion",
         name="CHIME/FRB Catalog Ingestion",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=CHIME_INGESTION_MISFIRE_GRACE_SECONDS,
     )
 
     # Re-seed GW events from GWOSC weekly to pick up new catalog releases.
@@ -465,6 +482,7 @@ def start_background_scheduler():
         id="gw_refresh_startup",
         name="GWOSC GW Event Refresh (startup catch-up)",
         replace_existing=True,
+        misfire_grace_time=GW_REFRESH_STARTUP_MISFIRE_GRACE_SECONDS,
     )
 
     # Keep-alive: run SELECT 1 every 4 minutes to keep the DB connection pool warm
