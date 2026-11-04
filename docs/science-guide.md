@@ -96,8 +96,8 @@ Rubin Observatory's alerts reach Rubin Scout through a separate Fink deployment 
 |-----|-------------------------------|
 | `most_likely_sn` | Alerts likely to be supernovae, according to Fink's SuperNNova and CATS classifiers |
 | `sn_near_galaxy_candidate` | Alerts that match a galaxy in catalogs and have properties consistent with a supernova |
-| `in_tns` | Alerts that already had a known counterpart in the Transient Name Server (a candidate or a confirmed transient) when Rubin emitted the alert |
-| `extragalactic_new_candidate` | Alerts that are new (first appeared less than 5 days ago), brighter than magnitude 24, and potentially extragalactic, with a fading or rising rate that passes Fink's cuts |
+| `in_tns` | Alerts that already had a known counterpart in the Transient Name Server (listed either as an unclassified transient, an AT, or as confirmed) at the time Rubin emitted the alert |
+| `extragalactic_new_candidate` | Alerts that are new (first appeared less than 5 days before the alert), brighter than magnitude 24, and potentially extragalactic, with a fading or rising rate that passes Fink's cuts |
 | `extragalactic_lt20mag_candidate` | Alerts that are rising, brighter than magnitude 20, and extragalactic candidates |
 
 **One tag per alert.** The tags overlap, but each alert is stored once. The tags are pulled in the order listed above, and an alert is kept under the first tag that returned it; the same alert found later under another tag is ignored. So an alert that is both a likely supernova and in TNS appears as `most_likely_sn`. The stored tag is the alert's "classification" on the platform. It is a selection label, not a spectroscopic or physical classification.
