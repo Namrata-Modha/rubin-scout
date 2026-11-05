@@ -8,6 +8,7 @@ Provides:
 - Request size limiting
 """
 
+import ipaddress
 import logging
 import secrets
 from typing import Optional
@@ -16,7 +17,6 @@ from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -26,12 +26,56 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # ---------------------------------------------------------------------------
+# Client address (what the rate limiter keys on)
+# ---------------------------------------------------------------------------
+def client_ip(request: Request) -> str:
+    """The address to rate-limit this request under.
+
+    ``X-Forwarded-For`` is just a header: anyone can send their own, and each
+    proxy APPENDS the address it saw connecting to it. So the only entries a
+    client cannot forge are the right-most ones added by proxies we run or
+    trust, and the leftmost entry -- which many stacks (including uvicorn
+    trusting ``*``) happily use -- is exactly the one a client controls.
+
+    ``settings.trusted_proxy_hops`` is how many right-most entries belong to
+    trusted proxies. With N hops the client is the Nth entry from the right:
+
+    * 0 (default): ignore the header entirely and use the socket peer. Nothing
+      a client sends can change its key.
+    * 1: the last entry, i.e. the address our one proxy saw. A client-supplied
+      ``X-Forwarded-For: 1.2.3.4`` arrives as ``1.2.3.4, <real>`` and we read
+      ``<real>``.
+
+    If the header is shorter than N (the request did not come through the
+    proxy), or the chosen entry is not an IP address, fall back to the socket
+    peer rather than trust it.
+
+    uvicorn must NOT also rewrite ``request.client`` from this header, or the
+    peer is already attacker-controlled: start it with ``--no-proxy-headers``.
+    """
+    peer = request.client.host if request.client and request.client.host else "127.0.0.1"
+    hops = settings.trusted_proxy_hops
+    if hops <= 0:
+        return peer
+
+    header = request.headers.get("x-forwarded-for", "")
+    entries = [e.strip() for e in header.split(",") if e.strip()]
+    if len(entries) < hops:
+        return peer
+    candidate = entries[-hops]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return peer
+
+
+# ---------------------------------------------------------------------------
 # Rate Limiter (IP-based)
 # ---------------------------------------------------------------------------
 # Defaults: 60 requests/minute for reads, 10/minute for writes.
 # Free tier friendly, prevents abuse without blocking normal usage.
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=client_ip,
     default_limits=["60/minute"],
     storage_uri="memory://",  # In-memory store, resets on restart. Fine for single-instance.
 )
@@ -123,7 +167,7 @@ async def require_admin_key(
 
     # Constant-time comparison to prevent timing attacks
     if not secrets.compare_digest(api_key, admin_key):
-        logger.warning(f"Invalid admin API key attempt from {get_remote_address(request)}")
+        logger.warning(f"Invalid admin API key attempt from {client_ip(request)}")
         raise HTTPException(
             status_code=403,
             detail="Invalid API key.",

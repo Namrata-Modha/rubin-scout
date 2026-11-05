@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     log_level: str = "INFO"
 
+    # How many reverse proxies sit between the internet and this app, i.e. how
+    # many right-most X-Forwarded-For entries were added by infrastructure we
+    # trust. 0 (the default) ignores X-Forwarded-For entirely and keys rate
+    # limits on the socket peer -- spoof-proof, but behind a proxy every visitor
+    # then looks like the proxy. Set it only after checking, with
+    # GET /api/health/client-ip, what your host actually sends. See
+    # app.security.client_ip.
+    trusted_proxy_hops: int = 0
+
     # Ingestion
     ingestion_interval_seconds: int = 900
     ingestion_lookback_days: int = 30
