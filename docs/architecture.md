@@ -92,6 +92,10 @@ Security is layered, not bolted on. Every request passes through multiple checks
 
 **Rate Limiting.** slowapi with in-memory storage. Defaults: 60 req/min for reads, 30/min for spatial queries, 10/min for writes, 5/min for seed endpoints. Returns 429 with Retry-After header.
 
+**Client address.** Rate limits are per client address. `X-Forwarded-For` is a header any client can send, so it is not trusted by default: the limiter uses the socket peer, and `TRUSTED_PROXY_HOPS=N` makes it use the Nth entry from the right, the one added by a proxy we run. uvicorn is started with `--no-proxy-headers` so it cannot rewrite the peer from that header first. Behind a proxy, leave the setting at 0 only until you have checked what the host sends with the admin-only `GET /api/health/client-ip`; at 0 every visitor behind the proxy shares one limit.
+
+**Chat assistant.** `POST /api/ask` allows 10 requests a minute and 60 an hour per client address. It also has a daily budget, `ASK_DAILY_LIMIT` (default 300 accepted questions per UTC day), and a kill switch, `ASK_ENABLED`. Over the budget or switched off, it answers normally with "The assistant is busy right now. Please try again later." The daily counter is held in memory, so it resets when the server restarts. Before any model call, a deterministic check looks for first-person suicide or self-harm intent; on a match the visitor gets a fixed caring message pointing to 988 (Canada and the US), 911 or local emergency services and findahelpline.com, with no embedding or model call and nothing logged or stored. That check runs before the budget and the kill switch, so it always applies.
+
 **Input Validation.** All inputs validated before reaching the database:
 - Object IDs validated against TNS/ZTF naming patterns
 - GW superevent IDs validated against LIGO pattern (`(GW|S)\d{6}[a-z]?`)
@@ -106,7 +110,7 @@ Security is layered, not bolted on. Every request passes through multiple checks
 
 **CORS.** Restricted to configured origins only. Methods limited to GET/POST/PATCH/DELETE. Headers limited to Content-Type and X-API-Key. Credentials disabled.
 
-**Request Size.** 1 MB body limit prevents oversized payloads.
+**Request Size.** A 64 KB request-body limit prevents oversized payloads. A declared oversize `Content-Length` is refused immediately, and the bytes actually received are counted too, so chunked bodies and clients that misstate the length are also stopped (HTTP 413).
 
 **Database.** Supabase with Row Level Security enabled on `subscriptions` and `ingestion_log` tables. All queries use SQLAlchemy ORM or parameterized `text()` queries (no string concatenation).
 

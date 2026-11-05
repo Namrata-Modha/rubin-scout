@@ -166,6 +166,8 @@ GATED_ROUTES = [
     ("POST", "/api/subscriptions/", {"json": {"name": "Test Sub", "user_email": "test@example.com"}}),
     ("PATCH", "/api/subscriptions/1", {"json": {"active": False}}),
     ("DELETE", "/api/subscriptions/1", {}),
+    # Diagnostic that echoes the proxy chain; it must never become public.
+    ("GET", "/api/health/client-ip", {}),
 ]
 GATED_ROUTE_IDS = [f"{m} {p}" for m, p, _ in GATED_ROUTES]
 

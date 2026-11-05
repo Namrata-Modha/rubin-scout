@@ -3,10 +3,11 @@ Rubin Scout FastAPI Application.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
@@ -16,9 +17,12 @@ from app.api.images import router as images_router
 from app.config import get_settings
 from app.ingestion.scheduler import start_background_scheduler, stop_background_scheduler
 from app.security import (
+    RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
+    client_ip,
     limiter,
     rate_limit_exceeded_handler,
+    require_admin_key,
 )
 
 settings = get_settings()
@@ -30,10 +34,30 @@ logging.basicConfig(
 )
 
 
+def warn_if_forwarded_headers_trusted() -> bool:
+    """Warn when uvicorn may be taking the client address from a client header.
+
+    Render's Python runtime documents FORWARDED_ALLOW_IPS=*. uvicorn reads that
+    variable and, when it is "*", takes the LEFT-most X-Forwarded-For entry as
+    the client address -- a value the client chooses. Start with
+    --no-proxy-headers (see render.yaml) and let app.security.client_ip decide.
+    """
+    risky = os.environ.get("FORWARDED_ALLOW_IPS", "").strip() == "*"
+    if risky:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS=* is set. Unless uvicorn runs with --no-proxy-headers, "
+            "client addresses (and per-IP rate limits) can be spoofed with an "
+            "X-Forwarded-For header."
+        )
+    return risky
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
     logger.info("Starting Rubin Scout backend...")
+
+    warn_if_forwarded_headers_trusted()
 
     # Start background ingestion scheduler
     if settings.app_env != "test":
@@ -61,13 +85,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Request size cap. Added FIRST so it is the innermost user middleware (the last
+# one added is the outermost): its 413 then still passes out through CORS and
+# the security headers.
+app.add_middleware(RequestSizeLimitMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # No cookies or HTTP auth cross origin: the frontend never sends credentials
+    # (fetch without credentials: "include"), and admin routes use X-API-Key.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 # Security headers
@@ -102,6 +133,22 @@ async def root():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/api/health/client-ip")
+async def client_ip_diagnostic(request: Request, _: bool = Depends(require_admin_key)):
+    """Admin-only: what address the rate limiter would key this request under.
+
+    Use it once after deploying to see what the host really sends. Call it with
+    a spoofed ``X-Forwarded-For: 9.9.9.9``: ``resolved_ip`` must be your real
+    address, never 9.9.9.9. Safe to delete once TRUSTED_PROXY_HOPS is settled.
+    """
+    return {
+        "resolved_ip": client_ip(request),
+        "trusted_proxy_hops": get_settings().trusted_proxy_hops,
+        "socket_peer": request.client.host if request.client else None,
+        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+    }
 
 
 @app.get("/api/health/ping")
