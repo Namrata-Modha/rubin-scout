@@ -17,6 +17,7 @@ from app.api.images import router as images_router
 from app.config import get_settings
 from app.ingestion.scheduler import start_background_scheduler, stop_background_scheduler
 from app.security import (
+    RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
     client_ip,
     limiter,
@@ -83,6 +84,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Request size cap. Added FIRST so it is the innermost user middleware (the last
+# one added is the outermost): its 413 then still passes out through CORS and
+# the security headers.
+app.add_middleware(RequestSizeLimitMiddleware)
 
 # CORS
 app.add_middleware(

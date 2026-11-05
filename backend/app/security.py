@@ -179,17 +179,62 @@ async def require_admin_key(
 # ---------------------------------------------------------------------------
 # Request Size Limiting Middleware
 # ---------------------------------------------------------------------------
-MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
+# Every JSON body this API accepts is tiny: the biggest legitimate one is a chat
+# question plus six prior turns (about 12,500 characters, at most ~50 KB even if
+# every character were four bytes). 64 KB covers that and every other route with
+# room to spare, and keeps a flood of huge bodies from being buffered.
+MAX_REQUEST_BODY_BYTES = 64 * 1024
 
 
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Rejects requests with bodies larger than 1 MB."""
+class RequestSizeLimitMiddleware:
+    """Rejects request bodies larger than MAX_REQUEST_BODY_BYTES with HTTP 413.
 
-    async def dispatch(self, request: Request, call_next):
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={"error": "payload_too_large", "detail": "Request body exceeds 1 MB limit."},
-            )
-        return await call_next(request)
+    Two checks, because Content-Length is only a claim: a declared length over
+    the limit is refused immediately, and the bytes actually received are counted
+    as the body streams in, which also stops chunked requests and clients that
+    lie about the length. Add it FIRST in main.py so it is the innermost user
+    middleware: the 413 then still passes out through CORS and the security
+    headers.
+    """
+
+    def __init__(self, app, max_bytes: int | None = None):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        limit = self.max_bytes if self.max_bytes is not None else MAX_REQUEST_BODY_BYTES
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None:
+            try:
+                too_big = int(declared) > limit
+            except ValueError:
+                too_big = False
+            if too_big:
+                response = JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": "payload_too_large",
+                        "detail": f"Request body exceeds {limit} bytes.",
+                    },
+                )
+                return await response(scope, receive, send)
+
+        received = 0
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    # Raised inside the route's body read, so FastAPI's own
+                    # exception handling turns it into a clean 413.
+                    raise HTTPException(
+                        status_code=413, detail=f"Request body exceeds {limit} bytes."
+                    )
+            return message
+
+        await self.app(scope, counting_receive, send)
