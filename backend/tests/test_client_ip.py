@@ -14,6 +14,9 @@ from app.security import client_ip, limiter
 
 REPO = Path(__file__).resolve().parents[2]
 
+# Throwaway value that only has to match itself within a test process; never a real key.
+FAKE_ADMIN_KEY = "test-only-throwaway-admin-key-not-a-real-secret"
+
 
 def _request(peer="10.0.0.5", xff=None):
     headers = [] if xff is None else [(b"x-forwarded-for", xff.encode())]
@@ -115,12 +118,20 @@ async def test_with_the_default_the_spoofed_header_is_not_even_read(hops):
 # --- the diagnostic and the start command -------------------------------------------
 
 @pytest.mark.asyncio
-async def test_the_diagnostic_shows_the_resolved_address_not_the_spoof(hops):
+async def test_the_diagnostic_shows_the_resolved_address_not_the_spoof(hops, monkeypatch):
+    # The route is admin-only. Configure the real (non-bypass) auth path with a
+    # throwaway key, as tests/test_admin_auth.py does, so this does not depend on
+    # APP_ENV: CI runs with APP_ENV=test and no ADMIN_API_KEY.
+    monkeypatch.setattr(security.settings, "app_env", "production")
+    monkeypatch.setattr(security.settings, "admin_api_key", FAKE_ADMIN_KEY)
     hops(1)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/api/health/client-ip",
-            headers={"X-Forwarded-For": "9.9.9.9, 198.51.100.7"},
+            headers={
+                "X-API-Key": FAKE_ADMIN_KEY,
+                "X-Forwarded-For": "9.9.9.9, 198.51.100.7",
+            },
         )
     body = resp.json()
     assert resp.status_code == 200
