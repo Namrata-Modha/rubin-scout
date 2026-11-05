@@ -94,9 +94,11 @@ app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # No cookies or HTTP auth cross origin: the frontend never sends credentials
+    # (fetch without credentials: "include"), and admin routes use X-API-Key.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 # Security headers
