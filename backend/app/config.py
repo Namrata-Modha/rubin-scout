@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # app.security.client_ip.
     trusted_proxy_hops: int = 0
 
+    # Chat assistant (POST /api/ask) spend controls. ASK_ENABLED=false switches the
+    # model path off; ASK_DAILY_LIMIT caps accepted questions per UTC day. The
+    # counter is in memory: it resets on restart (see app/ask_limits.py).
+    ask_enabled: bool = True
+    ask_daily_limit: int = 300
+
     # Ingestion
     ingestion_interval_seconds: int = 900
     ingestion_lookback_days: int = 30
