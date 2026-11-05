@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from app.security import limiter
+from rag.guard import guarded_response
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,15 @@ class AskResponse(BaseModel):
 @limiter.limit("10/minute")
 def ask_knowledge_base(request: Request, body: AskRequest):
     """Answer a question using the Rubin Scout RAG knowledge base."""
-    from rag.chain import ask
-
     history = [{"role": t.role, "content": t.content} for t in body.history]
+
+    # Safety first: a visitor in distress gets a fixed, caring reply with no
+    # embedding or model call. Nothing about the message is logged or stored.
+    safe = guarded_response(body.question, history)
+    if safe is not None:
+        return AskResponse(**safe)
+
+    from rag.chain import ask
 
     try:
         result = ask(body.question, history=history)
