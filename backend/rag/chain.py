@@ -154,6 +154,39 @@ def _invoke_llm(llm, prompt_value):
     return llm.invoke(prompt_value)
 
 
+NO_INFO_LINE = "I don't have information about that."
+
+
+def _reply_text(reply, default: str = NO_INFO_LINE) -> str:
+    """The plain text of a chat model reply, whatever shape ``content`` has.
+
+    Gemini models can return ``AIMessage.content`` as a list of content parts
+    (text mixed with thinking and other parts) instead of a string, and calling
+    ``.strip()`` on that raised AttributeError -> HTTP 500. A string stays a
+    string; a list is joined from its text parts (plain strings and
+    ``{"type": "text", "text": ...}``), ignoring thinking and every other part.
+    None, an unreadable shape or an empty result becomes ``default`` -- the
+    standard "I don't have information about that." line unless the caller needs
+    something else (the condense step falls back to the original question).
+    """
+    content = getattr(reply, "content", None)
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") == "text":
+                value = part.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+        text = "".join(parts)
+    else:
+        text = ""
+    return text.strip() or default
+
+
 def warm_up() -> None:
     """Build the component singletons at startup so the first request is fast.
 
@@ -196,7 +229,9 @@ def ask(question: str, history: list[dict] | None = None) -> dict:
         condense_prompt_value = _CONDENSE_PROMPT.invoke(
             {"history": lc_history, "question": question}
         )
-        standalone = _invoke_llm(llm, condense_prompt_value).content.strip()
+        # If the rewrite comes back empty, search with the original question
+        # rather than embedding the "no information" line.
+        standalone = _reply_text(_invoke_llm(llm, condense_prompt_value), default=question)
         logger.debug("Condensed %r -> %r", question, standalone)
     else:
         standalone = question
@@ -212,7 +247,7 @@ def ask(question: str, history: list[dict] | None = None) -> dict:
             "question": question,  # original phrasing, not the condensed form
         }
     )
-    answer = _invoke_llm(llm, answer_prompt_value).content.strip()
+    answer = _reply_text(_invoke_llm(llm, answer_prompt_value))
 
     sources = [
         {"source": doc.metadata.get("source", "unknown"), "metadata": doc.metadata}
