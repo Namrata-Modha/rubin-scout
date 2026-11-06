@@ -201,8 +201,9 @@ def _is_quota_error(exc: BaseException) -> bool:
     return False
 
 
-_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*([hms])")
-_UNIT_SECONDS = {"h": 3600.0, "m": 60.0, "s": 1.0}
+# "ms" must come before "m" in the alternation, or "500ms" reads as 500 minutes.
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|h|m|s)")
+_UNIT_SECONDS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
 
 
 def _retry_delay_seconds(exc: BaseException) -> Optional[float]:
@@ -212,10 +213,13 @@ def _retry_delay_seconds(exc: BaseException) -> Optional[float]:
         for detail in getattr(err, "details", None) or []:
             delay = getattr(detail, "retry_delay", None)
             seconds = getattr(delay, "seconds", None)
-            if isinstance(seconds, (int, float)) and seconds > 0:
-                return float(seconds) + float(getattr(delay, "nanos", 0) or 0) / 1e9
+            nanos = getattr(delay, "nanos", 0) or 0
+            if isinstance(seconds, (int, float)) and isinstance(nanos, (int, float)):
+                total = float(seconds) + float(nanos) / 1e9    # seconds may be 0 with nanos set
+                if total > 0:
+                    return total
         text = str(err)
-        match = re.search(r"retry in\s+((?:\d+(?:\.\d+)?\s*[hms]\s*)+)", text, re.IGNORECASE)
+        match = re.search(r"retry in\s+((?:\d+(?:\.\d+)?\s*(?:ms|h|m|s)\s*)+)", text, re.IGNORECASE)
         if match:
             return sum(float(n) * _UNIT_SECONDS[u] for n, u in _DURATION_PART.findall(match.group(1)))
         match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", text)
@@ -243,7 +247,19 @@ def _quota_exhausted_now() -> bool:
         return _clock() < _unavailable_until
 
 
-def _quota_reply() -> dict:
+BUSY_MESSAGE = "The assistant is busy right now. Please try again in a minute."
+
+
+def _quota_reply(exc: Optional[BaseException] = None) -> dict:
+    """The daily-limit text, or (for a short or unstated delay) the busy text.
+
+    Called with no error it means the model is already remembered as exhausted,
+    which only happens for a long delay.
+    """
+    if exc is not None:
+        delay = _retry_delay_seconds(exc)
+        if delay is None or delay <= LONG_QUOTA_THRESHOLD_SECONDS:
+            return {"answer": BUSY_MESSAGE, "sources": []}
     return {"answer": QUOTA_MESSAGE, "sources": []}
 
 
@@ -339,7 +355,7 @@ def ask(question: str, history: list[dict] | None = None) -> dict:
     except Exception as exc:
         if _is_quota_error(exc):
             _remember_quota_exhaustion(exc)
-            return _quota_reply()
+            return _quota_reply(exc)
         raise
 
 

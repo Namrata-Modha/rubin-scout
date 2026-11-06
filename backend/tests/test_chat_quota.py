@@ -23,6 +23,12 @@ QUOTA_REPLY = {
 }
 
 
+BUSY_REPLY = {
+    "answer": "The assistant is busy right now. Please try again in a minute.",
+    "sources": [],
+}
+
+
 def daily_quota_error(delay="7h20m12s"):
     return ResourceExhausted(
         f"429 You exceeded your current quota. limit: 20, model: gemini. Please retry in {delay}."
@@ -119,7 +125,7 @@ def test_a_429_from_the_embedding_service_gets_the_same_reply(monkeypatch):
             raise Embedding429("429 RESOURCE_EXHAUSTED. Please retry in 5s")
 
     use(monkeypatch, FakeLLM("never used"), ExhaustedStore())
-    assert chain.ask("What is a nova?") == QUOTA_REPLY
+    assert chain.ask("What is a nova?") == BUSY_REPLY      # "retry in 5s": short, so busy
 
 
 def test_other_errors_are_still_retried_briefly_and_then_raised_as_themselves(monkeypatch, _clean):
@@ -181,7 +187,7 @@ def test_a_short_delay_is_not_remembered(monkeypatch, clock):
     llm = FakeLLM(daily_quota_error("21s"), "A nova is a flare.")
     use(monkeypatch, llm)
 
-    assert chain.ask("first") == QUOTA_REPLY             # this question still gets the message
+    assert chain.ask("first") == BUSY_REPLY              # this question still gets a message
     assert chain.ask("What is a nova?")["answer"] == "A nova is a flare."   # the next tries again
     assert llm.calls == 2
 
@@ -190,7 +196,7 @@ def test_an_error_with_no_stated_delay_is_not_remembered(monkeypatch, clock):
     llm = FakeLLM(ResourceExhausted("429 quota exceeded"), "A nova is a flare.")
     use(monkeypatch, llm)
 
-    assert chain.ask("first") == QUOTA_REPLY
+    assert chain.ask("first") == BUSY_REPLY
     assert chain.ask("What is a nova?")["answer"] == "A nova is a flare."
 
 
@@ -203,6 +209,10 @@ def test_an_error_with_no_stated_delay_is_not_remembered(monkeypatch, clock):
         ("Please retry in 7h20m", 7 * 3600 + 20 * 60),
         ("Please retry in 1m5.2s", 65.2),
         ("Please retry in 26416.9s", 26416.9),
+        ("Please retry in 500ms", 0.5),
+        ("Please retry in 819.7ms.", 0.8197),
+        ("Please retry in 1m500ms", 60.5),
+        ("Please retry in 2h5m", 2 * 3600 + 300),
     ],
 )
 def test_the_retry_delay_is_read_from_the_error_message(text, seconds):
@@ -213,6 +223,34 @@ def test_the_retry_delay_is_read_from_structured_details():
     delay = SimpleNamespace(seconds=26400, nanos=500_000_000)
     err = ResourceExhausted("quota", details=[SimpleNamespace(retry_delay=delay)])
     assert chain._retry_delay_seconds(err) == pytest.approx(26400.5)
+
+
+def test_structured_delay_with_zero_seconds_and_only_nanos():
+    delay = SimpleNamespace(seconds=0, nanos=819_700_000)
+    err = ResourceExhausted("quota", details=[SimpleNamespace(retry_delay=delay)])
+    assert chain._retry_delay_seconds(err) == pytest.approx(0.8197)
+
+
+@pytest.mark.parametrize("delay", ["500ms", "819.7ms", "1m500ms"])
+def test_a_short_delay_in_any_unit_is_never_remembered(monkeypatch, clock, delay):
+    llm = FakeLLM(daily_quota_error(delay), "A nova is a flare.")
+    use(monkeypatch, llm)
+
+    assert chain.ask("first") == BUSY_REPLY
+    assert chain._unavailable_until == 0.0
+    assert chain.ask("What is a nova?")["answer"] == "A nova is a flare."
+    assert llm.calls == 2
+
+
+def test_the_two_messages_differ_by_delay(monkeypatch, clock):
+    use(monkeypatch, FakeLLM(daily_quota_error("30s")))
+    short = chain.ask("q")
+    chain._reset_quota_memory()
+    use(monkeypatch, FakeLLM(daily_quota_error("7h")))
+    long = chain.ask("q")
+
+    assert short == BUSY_REPLY and long == QUOTA_REPLY
+    assert short["answer"] != long["answer"]
 
 
 # --- the safety check still comes first ------------------------------------------------
@@ -227,6 +265,17 @@ def test_the_self_harm_message_still_wins_while_the_model_is_unavailable(monkeyp
 
 
 # --- through the HTTP route -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_route_returns_200_with_the_busy_reply_for_a_short_delay(monkeypatch):
+    use(monkeypatch, FakeLLM(daily_quota_error("500ms")))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/ask", json={"question": "What is a nova?"})
+
+    assert resp.status_code == 200
+    assert resp.json() == BUSY_REPLY
+
 
 @pytest.mark.asyncio
 async def test_the_route_returns_200_with_the_friendly_reply(monkeypatch):
