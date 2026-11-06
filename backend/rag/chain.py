@@ -16,14 +16,18 @@ CLI usage (from backend/):
 
 import logging
 import os
+import re
 import sys
-from typing import Any
+import threading
+import time
+from typing import Any, Optional
 
+from google.api_core.exceptions import ResourceExhausted
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_postgres import PGVector
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from rag.embeddings import GeminiEmbeddings
 from rag.guard import SELF_HARM_MESSAGE, guarded_response
@@ -142,6 +146,12 @@ def _get_components() -> dict[str, Any]:
     llm = ChatGoogleGenerativeAI(
         model=chat_model,
         google_api_key=os.environ.get("GEMINI_API_KEY"),
+        # The library defaults are max_retries=6 (exponential 2-32 s sleeps,
+        # retrying ResourceExhausted too) and no timeout (the API client then waits
+        # up to 600 s). With a visitor waiting that stacked into minutes; see
+        # _invoke_llm. One attempt and a 30 s timeout per request instead.
+        max_retries=LLM_MAX_RETRIES,
+        timeout=LLM_REQUEST_TIMEOUT_SECONDS,
     )
 
     _components["vectorstore"] = vectorstore
@@ -149,7 +159,109 @@ def _get_components() -> dict[str, Any]:
     return _components
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+# ── Chat model limits and quota handling ──────────────────────────────────────
+LLM_MAX_RETRIES = 1                 # langchain_google_genai's own retry: one attempt
+LLM_REQUEST_TIMEOUT_SECONDS = 30.0
+
+QUOTA_MESSAGE = (
+    "The assistant has reached its daily limit for questions. Please try again tomorrow."
+)
+# A retry delay longer than this means a quota that will not clear soon (a daily
+# limit), not a burst: remember it and stop calling the model.
+LONG_QUOTA_THRESHOLD_SECONDS = 10 * 60
+MAX_UNAVAILABLE_SECONDS = 12 * 3600
+
+# "Unavailable until" time for the chat model, on the monotonic clock. IN MEMORY
+# ONLY: it is lost when the process restarts (a deploy, a crash, Render's free
+# tier spinning down), after which the first question simply probes the model
+# again and, if the quota is still spent, sets it again.
+_clock = time.monotonic
+_quota_lock = threading.Lock()
+_unavailable_until = 0.0
+
+
+def _causes(exc: BaseException):
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+def _is_quota_error(exc: BaseException) -> bool:
+    """A Gemini quota / rate-limit error (HTTP 429, ResourceExhausted)."""
+    for err in _causes(exc):
+        if (
+            isinstance(err, ResourceExhausted)
+            or getattr(err, "code", None) == 429
+            or getattr(err, "status_code", None) == 429
+            or "RESOURCE_EXHAUSTED" in str(err)
+        ):
+            return True
+    return False
+
+
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*([hms])")
+_UNIT_SECONDS = {"h": 3600.0, "m": 60.0, "s": 1.0}
+
+
+def _retry_delay_seconds(exc: BaseException) -> Optional[float]:
+    """How long the API said to wait before retrying, if the error says."""
+    for err in _causes(exc):
+        # Structured RetryInfo on google.api_core errors: retry_delay.seconds.
+        for detail in getattr(err, "details", None) or []:
+            delay = getattr(detail, "retry_delay", None)
+            seconds = getattr(delay, "seconds", None)
+            if isinstance(seconds, (int, float)) and seconds > 0:
+                return float(seconds) + float(getattr(delay, "nanos", 0) or 0) / 1e9
+        text = str(err)
+        match = re.search(r"retry in\s+((?:\d+(?:\.\d+)?\s*[hms]\s*)+)", text, re.IGNORECASE)
+        if match:
+            return sum(float(n) * _UNIT_SECONDS[u] for n, u in _DURATION_PART.findall(match.group(1)))
+        match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", text)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def _remember_quota_exhaustion(exc: BaseException) -> None:
+    """If the error asks for a long wait, stay unavailable for that long (max 12 h)."""
+    global _unavailable_until
+    delay = _retry_delay_seconds(exc)
+    if delay is not None and delay > LONG_QUOTA_THRESHOLD_SECONDS:
+        hold = min(delay, MAX_UNAVAILABLE_SECONDS)
+        with _quota_lock:
+            _unavailable_until = max(_unavailable_until, _clock() + hold)
+        logger.warning(
+            "Gemini quota exhausted (asked to wait %.0fs); answering with the limit "
+            "message for %.0fs without calling the model", delay, hold,
+        )
+
+
+def _quota_exhausted_now() -> bool:
+    with _quota_lock:
+        return _clock() < _unavailable_until
+
+
+def _quota_reply() -> dict:
+    return {"answer": QUOTA_MESSAGE, "sources": []}
+
+
+def _reset_quota_memory() -> None:
+    """For tests."""
+    global _unavailable_until
+    with _quota_lock:
+        _unavailable_until = 0.0
+
+
+# Retry transient failures, but NEVER a quota error: retrying a 429 only makes the
+# visitor wait (the delay can be hours). reraise=True so callers see the real error.
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception(lambda exc: not _is_quota_error(exc)),
+    reraise=True,
+)
 def _invoke_llm(llm, prompt_value):
     return llm.invoke(prompt_value)
 
@@ -218,6 +330,20 @@ def ask(question: str, history: list[dict] | None = None) -> dict:
     if safe is not None:
         return safe
 
+    # The model said its quota is spent for hours: answer at once, no model call.
+    if _quota_exhausted_now():
+        return _quota_reply()
+
+    try:
+        return _answer(question, history)
+    except Exception as exc:
+        if _is_quota_error(exc):
+            _remember_quota_exhaustion(exc)
+            return _quota_reply()
+        raise
+
+
+def _answer(question: str, history: list[dict]) -> dict:
     comps = _get_components()
     llm = comps["llm"]
     vectorstore = comps["vectorstore"]
